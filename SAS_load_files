@@ -1,0 +1,51 @@
+/* Start CAS session */
+cas mySession;
+
+/* Assign a CAS library */
+libname mycaslib cas;
+
+/* Load the CSV file into CAS */
+proc casutil;
+    load file='/path/to/yourfile.csv'
+    outcaslib='mycaslib'
+    casout='mytable'
+    importoptions=(filetype='csv' getnames=true);
+quit;
+
+/* Verify that the table is loaded */
+proc casutil;
+    list tables incaslib='mycaslib';
+quit;
+
+/* Run an SQL query on the CAS table */
+proc sql;
+    create table mycaslib.my_summary as
+    select col1, col2, count(*) as count
+    from mycaslib.mytable
+    group by col1, col2;
+quit;
+
+/* Optionally promote the CAS table */
+proc casutil;
+    promote casdata='mytable' incaslib='mycaslib' outcaslib='mycaslib' casout='mytable';
+quit;
+
+/* End CAS session */
+cas mySession terminate;
+
+
+/* Load the first table from a CSV file */
+proc casutil;
+    load file='/path/to/file1.csv'
+    outcaslib='mycaslib'
+    casout='table1'  /* Name of the first CAS table */
+    importoptions=(filetype='csv' getnames=true);
+quit;
+
+/* Load the second table from another CSV file */
+proc casutil;
+    load file='/path/to/file2.csv'
+    outcaslib='mycaslib'
+    casout='table2'  /* Name of the second CAS table */
+    importoptions=(filetype='csv' getnames=true);
+quit;
