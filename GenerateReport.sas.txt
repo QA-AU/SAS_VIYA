@@ -1,0 +1,40 @@
+/* Generate report from output table */
+
+/* Step 1: Get the environment and current date/time */
+%let report_env = %sysfunc(getoption(SYSENV)); /* Get the current environment */
+%let report_datetime = %sysfunc(datetime(), datetime20.); /* Get the current date and time */
+
+/* Step 2: Generate the report */
+title1 "Verification Report";
+title2 "Environment: &report_env";
+title3 "Report Generated: &report_datetime";
+
+proc report data=work.verification_results nowd headline headskip;
+    column source_system source_tablename source_columnname
+           target_system target_tablename target_columnname
+           source_table_exist target_table_exist
+           source_column_exist target_column_exist
+           source_datatype_match target_datatype_match
+           overall_result comments;
+    
+    define source_system / 'Source System' width=15;
+    define source_tablename / 'Source Table' width=20;
+    define source_columnname / 'Source Column' width=20;
+    define target_system / 'Target System' width=15;
+    define target_tablename / 'Target Table' width=20;
+    define target_columnname / 'Target Column' width=20;
+    define source_table_exist / 'Source Table Exists' width=10;
+    define target_table_exist / 'Target Table Exists' width=10;
+    define source_column_exist / 'Source Column Exists' width=10;
+    define target_column_exist / 'Target Column Exists' width=10;
+    define source_datatype_match / 'Source Data Type Match' width=15;
+    define target_datatype_match / 'Target Data Type Match' width=15;
+    define overall_result / 'Overall Result' width=10;
+    define comments / 'Comments' width=50 flow;
+
+    /* Group by overall result for better organization */
+    break after overall_result / summarize skip;
+
+run;
+
+title; /* Reset the title */

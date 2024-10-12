@@ -1,0 +1,111 @@
+/* Compare Hash value of columns */
+
+data work.hash_comparison_results;
+    set work.meta;
+
+    length overall_result $10 comments $200;
+    length source_table_exist target_table_exist $5;
+    length source_column_hash target_column_hash $32; /* MD5 hash values are 32 characters long */
+
+    /* Step 1: Check if the source table exists and compute hash for each source column */
+    dataset_id_source = open(catx('.', source_system, source_tablename));
+    if dataset_id_source > 0 then do;
+        source_table_exist = 'Yes';
+        
+        /* Calculate hash for the source column separately */
+        proc sql noprint;
+            select md5(coalesce(source_columnname, ''))
+            into :source_column_hash
+            from &source_system..&source_tablename;
+        quit;
+    end;
+    else do;
+        source_table_exist = 'No';
+        source_column_hash = '';
+        comments = catx(' ', comments, 'ERROR: Unable to open source table', catx('.', source_system, source_tablename));
+    end;
+
+    /* Step 2: Check if the target table exists and compute hash for each target column */
+    dataset_id_target = open(catx('.', target_system, target_tablename));
+    if dataset_id_target > 0 then do;
+        target_table_exist = 'Yes';
+        
+        /* Calculate hash for the target column separately */
+        proc sql noprint;
+            select md5(coalesce(target_columnname, ''))
+            into :target_column_hash
+            from &target_system..&target_tablename;
+        quit;
+    end;
+    else do;
+        target_table_exist = 'No';
+        target_column_hash = '';
+        comments = catx(' ', comments, 'ERROR: Unable to open target table', catx('.', target_system, target_tablename));
+    end;
+
+    /* Step 3: Compare hash values */
+    if source_table_exist = 'Yes' and target_table_exist = 'Yes' then do;
+        if source_column_hash = target_column_hash then do;
+            overall_result = 'Pass';
+        end;
+        else do;
+            overall_result = 'Fail';
+            comments = catx(' ', comments, 'ERROR: Hash mismatch between source and target columns.');
+        end;
+    end;
+    else do;
+        overall_result = 'Fail';
+    end;
+
+    /* Close datasets */
+    if dataset_id_source > 0 then rc = close(dataset_id_source);
+    if dataset_id_target > 0 then rc = close(dataset_id_target);
+
+    /* Output the comparison result */
+    output;
+
+run;
+
+/* Step 4: Print the results with hash values */
+proc print data=work.hash_comparison_results noobs;
+    var source_system source_tablename source_columnname 
+        target_system target_tablename target_columnname 
+        source_table_exist target_table_exist 
+        source_column_hash target_column_hash
+        overall_result comments;
+run;
+
+
+
+/* Generate Report */
+
+/* Generate a report from work.hash_comparison_results */
+title "Hash Comparison Report for Source and Target Tables";
+
+proc report data=work.hash_comparison_results nowd headline headskip;
+    column source_system source_tablename source_columnname 
+           target_system target_tablename target_columnname 
+           source_table_exist target_table_exist 
+           source_column_hash target_column_hash
+           overall_result comments;
+    
+    /* Define columns with labels and widths */
+    define source_system / 'Source System' width=15;
+    define source_tablename / 'Source Table' width=20;
+    define source_columnname / 'Source Column' width=20;
+    define target_system / 'Target System' width=15;
+    define target_tablename / 'Target Table' width=20;
+    define target_columnname / 'Target Column' width=20;
+    define source_table_exist / 'Source Table Exists' width=10;
+    define target_table_exist / 'Target Table Exists' width=10;
+    define source_column_hash / 'Source Column Hash' width=40;
+    define target_column_hash / 'Target Column Hash' width=40;
+    define overall_result / 'Overall Result' width=10;
+    define comments / 'Comments' width=60 flow;
+
+    /* Break after the overall result to summarize data */
+    break after overall_result / summarize skip;
+
+run;
+
+title; /* Reset title */

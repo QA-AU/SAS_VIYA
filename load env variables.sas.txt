@@ -1,0 +1,37 @@
+/* Load json and env variable based on the value in the specified file of json */
+
+
+filename myjson 'C:\path\to\your\config.json'; /* Update the file path */
+
+libname mylib json fileref=myjson; /* Use the JSON engine to read the file */
+
+/* Create a dataset from the JSON file */
+data work.config;
+    set mylib.alldata; /* Create a new dataset in the WORK library */
+run;
+
+/* Step 1: Access the selected environment from the JSON file */
+data _null_;
+    set work.config;
+    if upcase(p1) = "SELECTED_ENV" then call symputx('selected_env', upcase(value));
+run;
+
+%put NOTE: Selected environment is: &selected_env;
+
+/* Step 2: Based on the selected environment, load the correct variables */
+data work.selected_env;
+    set work.config;
+    if &selected_env = "DEVELOPMENT" and p1 = "Development" then output;
+    else if &selected_env = "STAGING" and p1 = "Staging" then output;
+run;
+
+/* Step 3: Access Variable1 and Variable2 for the selected environment */
+data _null_;
+    set work.selected_env;
+    if upcase(p2) = "VARIABLE1" then call symputx('env_Variable1', value);
+    if upcase(p2) = "VARIABLE2" then call symputx('env_Variable2', value);
+run;
+
+/* Step 4: Display Variable1 and Variable2 values for the selected environment */
+%put NOTE: &selected_env Variable1 value is: &env_Variable1;
+%put NOTE: &selected_env Variable2 value is: &env_Variable2;

@@ -1,0 +1,43 @@
+/*Import meta data excel file in sas*/
+
+/* Step 1: Specify the file path */
+filename meta_file '/path/to/your/meta.xlsx'; /* Replace with actual path */
+
+/* Step 2: Use PROC IMPORT to load the Excel file into WORK library */
+proc import datafile=meta_file
+    out=work.meta /* Output dataset in WORK library */
+    dbms=xlsx /* Excel file format */
+    replace;
+    sheet="Sheet1"; /* Adjust this if the sheet has a different name */
+    getnames=yes; /* Use the first row as column names */
+run;
+
+/* Step 3: Print the imported dataset */
+proc print data=work.meta;
+run;
+
+/* Step 4: Count the number of rows and print the result */
+proc sql;
+    select count(*) as RowCount
+    from work.meta;
+quit;
+
+
+/* 
+The columns in the Excel sheet are:
+
+Source_system: Represents the system where the data is sourced from.
+source_tablename: The name of the table in the source system.
+source_columnname: The name of the column in the source table.
+source_datatype: The data type of the source column (e.g., char, num).
+target_system: The target system where the data will be loaded.
+target_tablename: The name of the table in the target system.
+target_columnname: The name of the column in the target table.
+target_datatype: The data type of the target column 
+primary_key: Indicates whether the column is a primary key (Yes/No).
+pk: Represents the primary key column 
+filter: Any filter condition to be applied (e.g., None, Active).
+include_column: Whether to include the column in the transformation (Yes/No).
+transformation_required: Indicates if any transformation is required (Yes/No).
+transformation_rule: The specific transformation rule to be applied, if any.
+*/

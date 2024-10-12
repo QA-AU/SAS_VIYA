@@ -1,0 +1,100 @@
+/*SAS Compare Table count */
+
+
+data work.record_count_comparison;
+    set work.meta;
+
+    length overall_result $10 comments $100;
+    length source_table_exist target_table_exist $5;
+    source_count = .;
+    target_count = .;
+
+    /* Step 1: Check if the source table exists and count records */
+    dataset_id_source = open(catx('.', source_system, source_tablename));
+    if dataset_id_source > 0 then do;
+        source_table_exist = 'Yes';
+        /* Count the number of records in the source table */
+        call symputx('source_table', catx('.', source_system, source_tablename));
+        proc sql noprint;
+            select count(*) into :source_count
+            from &source_table;
+        quit;
+    end;
+    else do;
+        source_table_exist = 'No';
+        source_count = .;
+        comments = catx(' ', comments, 'ERROR: Unable to open source table', catx('.', source_system, source_tablename));
+    end;
+
+    /* Step 2: Check if the target table exists and count records */
+    dataset_id_target = open(catx('.', target_system, target_tablename));
+    if dataset_id_target > 0 then do;
+        target_table_exist = 'Yes';
+        /* Count the number of records in the target table */
+        call symputx('target_table', catx('.', target_system, target_tablename));
+        proc sql noprint;
+            select count(*) into :target_count
+            from &target_table;
+        quit;
+    end;
+    else do;
+        target_table_exist = 'No';
+        target_count = .;
+        comments = catx(' ', comments, 'ERROR: Unable to open target table', catx('.', target_system, target_tablename));
+    end;
+
+    /* Step 3: Compare record counts */
+    if source_table_exist = 'Yes' and target_table_exist = 'Yes' then do;
+        if source_count = target_count then
+            overall_result = 'Pass';
+        else do;
+            overall_result = 'Fail';
+            comments = catx(' ', comments, 'ERROR: Record count mismatch. Source count:', source_count, 'Target count:', target_count);
+        end;
+    end;
+    else
+        overall_result = 'Fail';
+
+    /* Always close the datasets to free resources */
+    if dataset_id_source > 0 then rc = close(dataset_id_source);
+    if dataset_id_target > 0 then rc = close(dataset_id_target);
+
+    /* Output the comparison result */
+    output;
+
+run;
+
+/* Step 4: Print the results */
+proc print data=work.record_count_comparison noobs;
+    var source_system source_tablename target_system target_tablename source_table_exist target_table_exist source_count target_count overall_result comments;
+run;
+
+
+/* Generate a report */
+/* Generate the report from work.record_count_comparison */
+title1 "Record Count Comparison Report";
+title2 "Environment: &report_env";
+title3 "Report Generated: &report_datetime";
+
+
+proc report data=work.record_count_comparison nowd headline headskip;
+    column source_system source_tablename target_system target_tablename 
+           source_table_exist target_table_exist 
+           source_count target_count overall_result comments;
+    
+    define source_system / 'Source System' width=15;
+    define source_tablename / 'Source Table' width=20;
+    define target_system / 'Target System' width=15;
+    define target_tablename / 'Target Table' width=20;
+    define source_table_exist / 'Source Table Exists' width=10;
+    define target_table_exist / 'Target Table Exists' width=10;
+    define source_count / 'Source Count' width=12;
+    define target_count / 'Target Count' width=12;
+    define overall_result / 'Overall Result' width=10;
+    define comments / 'Comments' width=50 flow;
+
+    /* Adding a break by overall result */
+    break after overall_result / summarize skip;
+run;
+
+title; /* Reset the title */

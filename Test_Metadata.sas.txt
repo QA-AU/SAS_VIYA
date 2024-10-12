@@ -1,0 +1,146 @@
+/* Use meta data table (loaded frin import metadata) to test actual table metadata */
+
+data work.verification_results;
+    set work.meta;
+    
+    length overall_result comments $100;
+    length source_table_exist target_table_exist source_column_exist target_column_exist $5;
+    length source_column_type target_column_type $10;
+    length source_datatype_match target_datatype_match $5;
+    length source_column_length target_column_length 8;
+
+    /* Step 1: Initialize error handling and comments */
+    comments = ''; /* Initialize the comments field */
+    overall_result = 'Fail'; /* Initialize overall result to Fail */
+
+    /* Step 2: Handle missing values in metadata */
+    if missing(source_system) or missing(source_tablename) or missing(source_columnname) then do;
+        comments = catx(' ', comments, 'ERROR: Missing source metadata values for system=', source_system, 'table=', source_tablename, 'column=', source_columnname);
+        output; /* Immediately output this record */
+        return; /* Stop further processing */
+    end;
+    
+    if missing(target_system) or missing(target_tablename) or missing(target_columnname) then do;
+        comments = catx(' ', comments, 'ERROR: Missing target metadata values for system=', target_system, 'table=', target_tablename, 'column=', target_columnname);
+        output; /* Immediately output this record */
+        return; /* Stop further processing */
+    end;
+
+    /* Step 3: Check if the source table exists */
+    dataset_id_source = open(catx('.', source_system, source_tablename));
+    if dataset_id_source > 0 then do;
+        source_table_exist = 'Yes';
+    end;
+    else do;
+        source_table_exist = 'No';
+        comments = catx(' ', comments, 'ERROR: Unable to open source table', catx('.', source_system, source_tablename));
+    end;
+
+    /* Step 4: Check if the target table exists */
+    dataset_id_target = open(catx('.', target_system, target_tablename));
+    if dataset_id_target > 0 then do;
+        target_table_exist = 'Yes';
+    end;
+    else do;
+        target_table_exist = 'No';
+        comments = catx(' ', comments, 'ERROR: Unable to open target table', catx('.', target_system, target_tablename));
+    end;
+
+    /* Step 5: Check if the source column exists and match its data type */
+    if source_table_exist = 'Yes' then do;
+        if varnum(dataset_id_source, source_columnname) > 0 then do;
+            source_column_exist = 'Yes';
+            /* Check the data type of the source column */
+            source_column_type = vartype(dataset_id_source, source_columnname);
+            source_column_length = varlen(dataset_id_source, source_columnname);
+            if (source_column_type = 'C' and upcase(source_datatype) = 'CHAR') or 
+               (source_column_type = 'N' and upcase(source_datatype) = 'NUM') then
+                source_datatype_match = 'Yes';
+            else do;
+                source_datatype_match = 'No';
+                comments = catx(' ', comments, 'ERROR: Source column', source_columnname, 'data type mismatch.');
+            end;
+            /* Handle data length mismatch for character columns */
+            if source_column_type = 'C' and source_column_length ne input(source_datatype_length, best.) then do;
+                source_datatype_match = 'No';
+                comments = catx(' ', comments, 'ERROR: Source column', source_columnname, 'length mismatch. Expected:', source_datatype_length, 'Actual:', source_column_length);
+            end;
+        end;
+        else do;
+            source_column_exist = 'No';
+            comments = catx(' ', comments, 'ERROR: Source column', source_columnname, 'does not exist in', catx('.', source_system, source_tablename));
+        end;
+    end;
+
+    /* Step 6: Check if the target column exists and match its data type */
+    if target_table_exist = 'Yes' then do;
+        if varnum(dataset_id_target, target_columnname) > 0 then do;
+            target_column_exist = 'Yes';
+            /* Check the data type of the target column */
+            target_column_type = vartype(dataset_id_target, target_columnname);
+            target_column_length = varlen(dataset_id_target, target_columnname);
+            if (target_column_type = 'C' and upcase(target_datatype) = 'CHAR') or 
+               (target_column_type = 'N' and upcase(target_datatype) = 'NUM') then
+                target_datatype_match = 'Yes';
+            else do;
+                target_datatype_match = 'No';
+                comments = catx(' ', comments, 'ERROR: Target column', target_columnname, 'data type mismatch.');
+            end;
+            /* Handle data length mismatch for character columns */
+            if target_column_type = 'C' and target_column_length ne input(target_datatype_length, best.) then do;
+                target_datatype_match = 'No';
+                comments = catx(' ', comments, 'ERROR: Target column', target_columnname, 'length mismatch. Expected:', target_datatype_length, 'Actual:', target_column_length);
+            end;
+        end;
+        else do;
+            target_column_exist = 'No';
+            comments = catx(' ', comments, 'ERROR: Target column', target_columnname, 'does not exist in', catx('.', target_system, target_tablename));
+        end;
+    end;
+
+    /* Step 7: Determine overall result */
+    if source_table_exist = 'Yes' and target_table_exist = 'Yes' and
+       source_column_exist = 'Yes' and target_column_exist = 'Yes' and
+       source_datatype_match = 'Yes' and target_datatype_match = 'Yes' then
+        overall_result = 'Pass';
+    else
+        overall_result = 'Fail';
+
+    /* Always close the datasets to free resources */
+    if dataset_id_source > 0 then rc = close(dataset_id_source);
+    if dataset_id_target > 0 then rc = close(dataset_id_target);
+
+    /* Output the verification result for each row */
+    output;
+
+run;
+
+/* Step 8: Print the results */
+proc print data=work.verification_results noobs;
+    var source_system source_tablename source_columnname 
+        target_system target_tablename target_columnname 
+        source_table_exist target_table_exist 
+        source_column_exist target_column_exist
+        source_datatype_match target_datatype_match
+        overall_result comments;
+run;
+
+
+/*
+ description of each result column in the output:
+
+source_system: The name of the source library where the source table is located.
+source_tablename: The name of the source table being checked in the source system.
+source_columnname: The name of the source column being verified within the source table.
+target_system: The name of the target library where the target table is located.
+target_tablename: The name of the target table being checked in the target system.
+target_columnname: The name of the target column being verified within the target table.
+source_table_exist: Indicates whether the source table exists (Yes or No).
+target_table_exist: Indicates whether the target table exists (Yes or No).
+source_column_exist: Indicates whether the source column exists in the source table (Yes or No).
+target_column_exist: Indicates whether the target column exists in the target table (Yes or No).
+source_datatype_match: Indicates whether the source column's data type matches the expected data type (Yes, No, or N/A if the column does not exist).
+target_datatype_match: Indicates whether the target column's data type matches the expected data type (Yes, No, or N/A if the column does not exist).
+overall_result: The final result of the check (Pass or Fail), based on whether both tables and columns exist and whether the data types match.
+comments: Provides detailed error messages if any issues are encountered (e.g., missing tables, columns, data type mismatches). This helps explain why the overall result is marked as Fail.
+*/

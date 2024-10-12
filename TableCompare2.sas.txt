@@ -1,0 +1,172 @@
+TableCompare1.sas.txt
+
+/*
+Summary:
+This code dynamically reads table names, column names, and primary key information from the meta table (work.meta).
+It uses this metadata to build SQL queries and comparison logic, ensuring that the table structure is flexible and can handle any schema defined in work.meta.
+The generated report shows one row per mismatching column, highlighting the differences between the source and target tables.
+
+*/
+
+/* Step 1: Read metadata from work.meta to get table names, column names, and primary key columns */
+proc sql noprint;
+    /* Get source and target system and table names */
+    select distinct source_system, source_tablename, target_system, target_tablename
+    into :source_system, :source_table, :target_system, :target_table
+    from work.meta;
+
+    /* Get primary key columns for the join condition */
+    select catx(' and ', 
+                cat('a.', source_columnname, ' = ', 'b.', target_columnname))
+    into :join_conditions separated by ' and '
+    from work.meta
+    where pk = 'Y'; /* Only include primary key columns */
+
+    /* Get non-primary key columns for comparison */
+    select catx(' or ', 
+                cat('a.', source_columnname, ' ne ', 'b.', target_columnname))
+    into :non_pk_conditions separated by ' or '
+    from work.meta
+    where pk ne 'Y' or pk is null; /* Non-primary key columns for value comparison */
+
+    /* Get all columns for comparison */
+    select source_columnname, target_columnname
+    into :source_columns separated by ' ', :target_columns separated by ' '
+    from work.meta;
+quit;
+
+/* Step 2: Count records in source (TableA) and target (TableB) */
+proc sql noprint;
+    select count(*) into :source_count
+    from &source_system..&source_table;
+
+    select count(*) into :target_count
+    from &target_system..&target_table;
+quit;
+
+/* Print the count of records in both tables */
+%put Source Table (TableA) has &source_count records.;
+%put Target Table (TableB) has &target_count records.;
+
+/* Step 3: Perform different SQL queries based on record counts */
+%macro compare_tables;
+    %if &source_count >= &target_count %then %do;
+        /* TableA has more or equal records, proceed with the original logic */
+        %put TableA has more or equal records than TableB.;
+
+        %let sql_query = create table source_minus_target as
+            select 
+                a.ColA, /* Primary key from source */
+                &source_columns as source_values, /* Dynamically pull source columns from meta */
+                &target_columns as target_values /* Dynamically pull target columns from meta */
+            from &source_system..&source_table a
+            left join &target_system..&target_table b
+            on &join_conditions /* Use the dynamic join condition based on PK columns */
+            where b.ColA is null /* Missing in target */
+            or &non_pk_conditions; /* Compare non-primary key columns */;
+        
+        /* Print the SQL query */
+        %put &sql_query;
+
+        /* Execute the SQL query */
+        proc sql;
+            &sql_query
+        quit;
+    %end;
+    %else %do;
+        /* TableB has more records, adjust the logic */
+        %put TableB has more records than TableA.;
+
+        %let sql_query = create table source_minus_target as
+            select 
+                b.ColA, /* Primary key from target */
+                &source_columns as source_values, /* Dynamically pull source columns from meta */
+                &target_columns as target_values /* Dynamically pull target columns from meta */
+            from &target_system..&target_table b
+            left join &source_system..&source_table a
+            on &join_conditions /* Use the dynamic join condition based on PK columns */
+            where a.ColA is null /* Missing in source */
+            or &non_pk_conditions; /* Compare non-primary key columns */;
+        
+        /* Print the SQL query */
+        %put &sql_query;
+
+        /* Execute the SQL query */
+        proc sql;
+            &sql_query
+        quit;
+    %end;
+%mend compare_tables;
+
+%compare_tables;
+
+/* Step 4: Create a flag to capture mismatches for each column */
+data source_minus_target_mismatch;
+    set source_minus_target;
+    /* Loop through the dynamic columns to create mismatch flags dynamically */
+    %do i=1 %to %sysfunc(countw(&source_columns));
+        %let src_col = %scan(&source_columns, &i);
+        %let tgt_col = %scan(&target_columns, &i);
+        if &src_col ne &tgt_col then mismatch_&src_col = 1;
+    %end;
+run;
+
+/* Step 5: Create a final dataset that shows one row per mismatching column */
+data mismatch_report;
+    set source_minus_target_mismatch;
+    /* Dynamically create mismatch rows for each column */
+    %do i=1 %to %sysfunc(countw(&source_columns));
+        %let src_col = %scan(&source_columns, &i);
+        %let tgt_col = %scan(&target_columns, &i);
+        if mismatch_&src_col = 1 then do;
+            mismatch_column = "&src_col";
+            source_value = &src_col;
+            target_value = &tgt_col;
+            output;
+        end;
+    %end;
+    keep ColA mismatch_column source_value target_value;
+run;
+
+/* Step 6: Generate a report from mismatch_report */
+%macro generate_report;
+    %if &minus_count = 0 %then %do;
+        %put MATCH: Source and Target tables &source_table and &target_table match.;
+    %end;
+    %else %do;
+        %put MISMATCH: Differences found between Source and Target tables &source_table and &target_table.;
+
+        /* Generate the report using PROC REPORT */
+        title "Source Minus Target Report: Mismatches between &source_table and &target_table";
+        proc report data=mismatch_report nowd headline headskip;
+            column ColA mismatch_column source_value target_value;
+
+            /* Define column labels and formats */
+            define ColA / 'Primary Key (ColA)' width=15;
+            define mismatch_column / 'Mismatching Column' width=20;
+            define source_value / 'Source Value' width=20;
+            define target_value / 'Target Value' width=20;
+
+            /* Add a break after each mismatch */
+            break after ColA / skip;
+        run;
+        title; /* Clear the title */
+    %end;
+%mend generate_report;
+
+%generate_report;
+
+
+/*
+Output
+SQ: + 
+
+Source Minus Target Report: Mismatches between TableA and TableB
+-----------------------------------------------------------------
+
+Primary Key (ColA) | Mismatching Column | Source Value  | Target Value
+-------------------|--------------------|---------------|--------------
+1                  | ColB               | A             | B
+2                  | ColC               | X             | Y
+
+*/

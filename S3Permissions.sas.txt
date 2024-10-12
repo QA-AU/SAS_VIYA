@@ -1,0 +1,76 @@
+/* Define your S3 bucket name and the file path */
+%let bucket_name = your-s3-bucket-name;  /* Replace with your S3 bucket name */
+%let file_to_upload = /path/to/test.txt; /* Replace with the full path to your test.txt file */
+%let s3_file = test.txt;  /* Name of the file to upload in S3 */
+
+/* Step 1: Check Read Permissions by listing files in the S3 bucket */
+%macro check_read_permission;
+    %put Checking READ permission in the S3 bucket...;
+
+    proc s3 list;
+        bucket="&bucket_name";
+    run;
+
+    /* Check for errors */
+    %if &SYSCC > 0 %then %do;
+        %put ERROR: Failed to list files in the S3 bucket &bucket_name. READ access denied.;
+        /* Reset SYSCC for subsequent operations */
+        %let SYSCC = 0;
+        %return;
+    %end;
+    %else %do;
+        %put SUCCESS: READ access confirmed for the S3 bucket &bucket_name.;
+    %end;
+%mend check_read_permission;
+
+%check_read_permission;
+
+/* Step 2: Check Write Permission by uploading a file to the S3 bucket */
+%macro check_write_permission;
+    %put Checking WRITE permission by uploading &file_to_upload to &bucket_name...;
+
+    proc s3 put;
+        bucket="&bucket_name";
+        key="&s3_file";
+        file="&file_to_upload";
+    run;
+
+    /* Check for errors */
+    %if &SYSCC > 0 %then %do;
+        %put ERROR: Failed to upload &file_to_upload to the S3 bucket &bucket_name. WRITE access denied.;
+        /* Reset SYSCC for subsequent operations */
+        %let SYSCC = 0;
+        %return;
+    %end;
+    %else %do;
+        %put SUCCESS: File &file_to_upload uploaded successfully to S3.;
+    %end;
+%mend check_write_permission;
+
+%check_write_permission;
+
+/* Step 3: Check Delete Permission by deleting the uploaded file */
+%macro check_delete_permission;
+    %put Checking DELETE permission by deleting &s3_file from &bucket_name...;
+
+    proc s3 delete;
+        bucket="&bucket_name";
+        key="&s3_file";
+    run;
+
+    /* Check for errors */
+    %if &SYSCC > 0 %then %do;
+        %put ERROR: Failed to delete &s3_file from the S3 bucket &bucket_name. DELETE access denied.;
+        /* Reset SYSCC */
+        %let SYSCC = 0;
+        %return;
+    %end;
+    %else %do;
+        %put SUCCESS: File &s3_file deleted successfully from S3.;
+    %end;
+%mend check_delete_permission;
+
+%check_delete_permission;
+
+/* Summary of Permissions Check */
+%put Read, Write, and Delete permissions have been tested on the S3 bucket &bucket_name.;
