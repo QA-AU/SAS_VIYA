@@ -1,0 +1,96 @@
+%let pk_columns = pk_column1 pk_column2;  /* Replace with actual PK column names */
+%let nonpk_columns = nonpk_column1 nonpk_column2; /* Replace with actual non-PK column names */
+
+libname mylib 'path/to/your/library';
+
+/* Step 0: Cleanup previously created intermediate tables */
+proc datasets lib=mylib nolist;
+    delete hash_large1 hash_large2 hash_large1_srt hash_large2_srt diff_srt mismatch_samples;
+quit;
+%put NOTE: Step 0 - Cleaned up previous intermediate tables.;
+
+/* Step 1: Process large_table1 */
+%let start_time1 = %sysfunc(datetime());
+data mylib.hash_large1 (keep=&pk_columns hashnonpk);
+    set large_table1;
+
+    /* Calculate hash of non-PK columns only */
+    length hashnonpk $32;
+    hashnonpk = md5(cats(of &nonpk_columns));
+run;
+%let end_time1 = %sysfunc(datetime());
+%let duration1 = %sysevalf(&end_time1 - &start_time1);
+%put NOTE: Step 1 took &duration1 seconds.;
+
+/* Step 2: Process large_table2 */
+%let start_time2 = %sysfunc(datetime());
+data mylib.hash_large2 (keep=&pk_columns hashnonpk);
+    set large_table2;
+
+    /* Calculate hash of non-PK columns only */
+    length hashnonpk $32;
+    hashnonpk = md5(cats(of &nonpk_columns));
+run;
+%let end_time2 = %sysfunc(datetime());
+%let duration2 = %sysevalf(&end_time2 - &start_time2);
+%put NOTE: Step 2 took &duration2 seconds.;
+
+/* Step 3: Sort mylib.hash_large1 and save as mylib.hash_large1_srt */
+%let start_time3 = %sysfunc(datetime());
+proc sort data=mylib.hash_large1 out=mylib.hash_large1_srt;
+    by &pk_columns;
+run;
+%let end_time3 = %sysfunc(datetime());
+%let duration3 = %sysevalf(&end_time3 - &start_time3);
+%put NOTE: Step 3 (sorting hash_large1) took &duration3 seconds.;
+
+/* Step 4: Sort mylib.hash_large2 and save as mylib.hash_large2_srt */
+%let start_time4 = %sysfunc(datetime());
+proc sort data=mylib.hash_large2 out=mylib.hash_large2_srt;
+    by &pk_columns;
+run;
+%let end_time4 = %sysfunc(datetime());
+%let duration4 = %sysevalf(&end_time4 - &start_time4);
+%put NOTE: Step 4 (sorting hash_large2) took &duration4 seconds.;
+
+/* Step 5: Perform EXCEPT operation and limit output to 50 rows */
+%let start_time5 = %sysfunc(datetime());
+proc sql outobs=50;
+    create table mylib.diff_srt as
+    select * from mylib.hash_large1_srt
+    except
+    select * from mylib.hash_large2_srt;
+quit;
+%let end_time5 = %sysfunc(datetime());
+%let duration5 = %sysevalf(&end_time5 - &start_time5);
+%put NOTE: Step 5 (EXCEPT operation) took &duration5 seconds.;
+
+/* Step 6: Check if diff_srt is empty and print matching status */
+%let count_diff = 0;
+proc sql noprint;
+    select count(*) into :count_diff from mylib.diff_srt;
+quit;
+
+%if &count_diff = 0 %then %do;
+    %put NOTE: large_table1 and large_table2 match 100%;
+%end;
+%else %do;
+    %put NOTE: large_table1 and large_table2 have differences. Displaying sample mismatches.;
+
+    /* Display one record each from large_table1 and large_table2 for each PK in diff_srt */
+    proc sql;
+        create table mylib.mismatch_samples as
+        select * from large_table1 as t1
+        where exists (select 1 from mylib.diff_srt as d where t1.&pk_columns = d.&pk_columns)
+        
+        union all
+        
+        select * from large_table2 as t2
+        where exists (select 1 from mylib.diff_srt as d where t2.&pk_columns = d.&pk_columns);
+    quit;
+
+    /* Print sample mismatches */
+    proc print data=mylib.mismatch_samples (obs=10);
+        title "Sample Mismatches from large_table1 and large_table2";
+    run;
+%end;
