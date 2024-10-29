@@ -1,3 +1,5 @@
+%let large_table1 = large_table1;  /* Replace with actual name of the first large table */
+%let large_table2 = large_table2;  /* Replace with actual name of the second large table */
 %let pk_columns = pk_column1 pk_column2;  /* Replace with actual PK column names */
 %let nonpk_columns = nonpk_column1 nonpk_column2; /* Replace with actual non-PK column names */
 
@@ -9,10 +11,10 @@ proc datasets lib=mylib nolist;
 quit;
 %put NOTE: Step 0 - Cleaned up previous intermediate tables.;
 
-/* Step 1: Process large_table1 */
+/* Step 1: Process &large_table1 */
 %let start_time1 = %sysfunc(datetime());
 data mylib.hash_large1 (keep=&pk_columns hashnonpk);
-    set large_table1;
+    set &large_table1;
 
     /* Calculate hash of non-PK columns only */
     length hashnonpk $32;
@@ -22,10 +24,10 @@ run;
 %let duration1 = %sysevalf(&end_time1 - &start_time1);
 %put NOTE: Step 1 took &duration1 seconds.;
 
-/* Step 2: Process large_table2 */
+/* Step 2: Process &large_table2 */
 %let start_time2 = %sysfunc(datetime());
 data mylib.hash_large2 (keep=&pk_columns hashnonpk);
-    set large_table2;
+    set &large_table2;
 
     /* Calculate hash of non-PK columns only */
     length hashnonpk $32;
@@ -72,25 +74,25 @@ proc sql noprint;
 quit;
 
 %if &count_diff = 0 %then %do;
-    %put NOTE: large_table1 and large_table2 match 100%;
+    %put NOTE: &large_table1 and &large_table2 match 100%;
 %end;
 %else %do;
-    %put NOTE: large_table1 and large_table2 have differences. Displaying sample mismatches.;
+    %put NOTE: &large_table1 and &large_table2 have differences. Displaying sample mismatches.;
 
-    /* Display one record each from large_table1 and large_table2 for each PK in diff_srt */
+    /* Display one record each from &large_table1 and &large_table2 for each PK in diff_srt */
     proc sql;
         create table mylib.mismatch_samples as
-        select * from large_table1 as t1
+        select * from &large_table1 as t1
         where exists (select 1 from mylib.diff_srt as d where t1.&pk_columns = d.&pk_columns)
         
         union all
         
-        select * from large_table2 as t2
+        select * from &large_table2 as t2
         where exists (select 1 from mylib.diff_srt as d where t2.&pk_columns = d.&pk_columns);
     quit;
 
     /* Print sample mismatches */
     proc print data=mylib.mismatch_samples (obs=10);
-        title "Sample Mismatches from large_table1 and large_table2";
+        title "Sample Mismatches from &large_table1 and &large_table2";
     run;
 %end;
