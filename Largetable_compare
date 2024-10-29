@@ -83,12 +83,28 @@ quit;
     proc sql;
         create table mylib.mismatch_samples as
         select * from &large_table1 as t1
-        where exists (select 1 from mylib.diff_srt as d where t1.&pk_columns = d.&pk_columns)
+        where exists (
+            select 1 from mylib.diff_srt as d 
+            where %do i = 1 %to %sysfunc(countw(&pk_columns));
+                t1.%scan(&pk_columns, &i) = d.%scan(&pk_columns, &i)
+                %if &i < %sysfunc(countw(&pk_columns)) %then %do;
+                    and
+                %end;
+            %end;
+        )
         
         union all
         
         select * from &large_table2 as t2
-        where exists (select 1 from mylib.diff_srt as d where t2.&pk_columns = d.&pk_columns);
+        where exists (
+            select 1 from mylib.diff_srt as d 
+            where %do i = 1 %to %sysfunc(countw(&pk_columns));
+                t2.%scan(&pk_columns, &i) = d.%scan(&pk_columns, &i)
+                %if &i < %sysfunc(countw(&pk_columns)) %then %do;
+                    and
+                %end;
+            %end;
+        );
     quit;
 
     /* Print sample mismatches */
