@@ -1,0 +1,143 @@
+/*
+Core Functionalities
+Chunk-Based Comparison:
+Processes the input dataset tableA in chunks of 1000 rows for memory efficiency.
+Compares each chunk with tableB.
+Key-Based Comparison:
+Uses the specified key column(s) (keyColumns) to align rows between tableA and tableB.
+Flagging Differences:
+Assigns a Source column to indicate the type of difference:
+MISSING_IN_B: Row is present in tableA but missing in tableB.
+MISSING_IN_A: Row is present in tableB but missing in tableA.
+MISMATCH: Row is present in both tables but has mismatched values in the specified columns.
+Dynamic Column Selection:
+Allows comparison of selected columns by specifying compareColumns.
+If compareColumns is not provided, the macro uses all columns in tableA.
+Side-by-Side Differences:
+Outputs rows from tableA and tableB side by side for easy comparison.
+Column names in the output are prefixed with TableA_ and TableB_ to differentiate the source.
+Truncated Column Names:
+Ensures column names in the output table (diffX) are truncated to a maximum of 35 characters.
+Counters for Difference Types:
+Tracks and logs the number of rows for each difference type:
+Count of rows missing in tableB (MISSING_IN_B).
+Count of rows missing in tableA (MISSING_IN_A).
+Count of rows with mismatches (MISMATCH).
+Cumulative Results:
+Appends differences from each chunk to the output table (diffX).
+Logging:
+Provides detailed logs for the following:
+Total rows missing in tableA or tableB.
+Total rows with mismatches.
+Tracks the start and end of processing.
+
+
+*/
+
+
+%macro find_difference_with_flags(tableA, tableB, diffX, keyColumns, compareColumns=);
+    %local obsChunk totalA colList;
+
+    /* Define the chunk size */
+    %let obsChunk = 1000;
+
+    /* If no compareColumns specified, use all columns */
+    %if &compareColumns = %then %do;
+        proc sql noprint;
+            select name into :colList separated by ', '
+            from dictionary.columns
+            where libname='WORK' and memname=upcase("&tableA");
+        quit;
+        %let compareColumns = &colList;
+    %end;
+
+    /* Initialize the output table */
+    proc sql;
+        create table &diffX as
+        select 
+            'Key' as Key length=35,
+            'Source' as Source length=35,
+            %do i = 1 %to %sysfunc(countw(&compareColumns, ','));
+                %let col = %scan(&compareColumns, &i, ',');
+                %let shortColA = %substr(TableA_&col, 1, 35);
+                %let shortColB = %substr(TableB_&col, 1, 35);
+                &shortColA length=35,
+                &shortColB length=35
+            %end;
+        from &tableA(obs=0); /* Empty table structure */
+    quit;
+
+    /* Step 1: Determine the total number of rows in tableA */
+    data _null_;
+        if 0 then set &tableA nobs=totalA;
+        call symputx('totalA', totalA);
+    run;
+
+    /* Initialize counters */
+    %let missingInB = 0;
+    %let missingInA = 0;
+    %let mismatches = 0;
+
+    /* Step 2: Process in chunks and compare selected columns */
+    %do i = 1 %to &totalA %by &obsChunk;
+
+        /* Extract a chunk from tableA */
+        data chunkA;
+            set &tableA(firstobs=&i obs=%eval(&i + &obsChunk - 1));
+        run;
+
+        /* Perform FULL OUTER JOIN to compare rows side by side */
+        proc sql;
+            create table diffChunk as
+            select 
+                coalesce(a.&keyColumns, b.&keyColumns) as Key length=35,
+                case
+                    when a.&keyColumns is not null and b.&keyColumns is null then "MISSING_IN_B"
+                    when a.&keyColumns is null and b.&keyColumns is not null then "MISSING_IN_A"
+                    else "MISMATCH"
+                end as Source length=35,
+                %do i = 1 %to %sysfunc(countw(&compareColumns, ','));
+                    %let col = %scan(&compareColumns, &i, ',');
+                    a.&col as TableA_&col length=35,
+                    b.&col as TableB_&col length=35
+                %end;
+            from chunkA as a
+            full join &tableB as b
+            on a.&keyColumns = b.&keyColumns
+            where not (
+                %do i = 1 %to %sysfunc(countw(&compareColumns, ','));
+                    %let col = %scan(&compareColumns, &i, ',');
+                    a.&col = b.&col and
+                %end;
+                (a.* is null and b.* is null)
+            );
+        quit;
+
+        /* Update counters for row counts by Source */
+        proc sql noprint;
+            select count(*) into :missingInB from diffChunk where Source = 'MISSING_IN_B';
+            select count(*) into :missingInA from diffChunk where Source = 'MISSING_IN_A';
+            select count(*) into :mismatches from diffChunk where Source = 'MISMATCH';
+        quit;
+
+        /* Append the side-by-side differences to the output table */
+        proc append base=&diffX data=diffChunk force;
+        run;
+
+    %end;
+
+    /* Log the counts */
+    %put NOTE: Rows missing in &tableB: &missingInB;
+    %put NOTE: Rows missing in &tableA: &missingInA;
+    %put NOTE: Rows with mismatches: &mismatches;
+
+%mend find_difference_with_flags;
+
+/* Example Usage */
+%find_difference_with_flags(
+    tableA=sashelp.class,
+    tableB=sashelp.classfit,
+    diffX=work.differences_with_flags,
+    keyColumns=name, /* Replace with actual key column(s) */
+    compareColumns=name, age /* Replace with desired columns to compare */
+);
