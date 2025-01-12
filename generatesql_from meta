@@ -1,0 +1,107 @@
+%macro process_table(table_name);
+
+    /* Validate that the input table name is not empty */
+    %if %length(&table_name) = 0 %then %do;
+        %put ERROR: Table name must be provided.;
+        %return;
+    %end;
+
+    /* Filter rows from meta_tab based on the input table name */
+    proc sql;
+        create table processed_tab as
+        select 
+            table_name,
+            column_name,
+            column_type,
+            coalesce(column_format, '') as column_format, /* Handle empty column_format */
+            primary_key_flag,
+            '' as trsf_col length=100,          /* Default value for trsf_col */
+            '' as trsf_override length=100,    /* Default value for trsf_override */
+            '' as filter_col length=100        /* Default value for filter_col */
+        from meta_tab
+        where table_name = "&table_name";
+    quit;
+
+    %put NOTE: Rows for table &table_name have been processed and loaded into processed_tab.;
+
+%mend process_table;
+
+%macro process_transformations;
+
+    /* Process transformations for each row in processed_tab */
+    proc sql;
+        update processed_tab
+        set trsf_col = case
+            /* Handle date formats explicitly */
+            when column_type = 'DATE' and column_format ne '' then catx(' ', 
+                'COALESCE(INPUT(PUT(', column_name, ',', column_format, '), ANYDTDTE.), NULL) AS', column_name)
+            /* Handle datetime formats explicitly */
+            when column_type = 'DATETIME' and column_format ne '' then catx(' ', 
+                'COALESCE(INPUT(PUT(', column_name, ',', column_format, '), ANYDTDTM.), NULL) AS', column_name)
+            /* Handle empty column_format for DATE and DATETIME */
+            when column_type in ('DATE', 'DATETIME') and column_format = '' then catx(' ', 
+                'COALESCE(CAST(COALESCE(' || column_name || ', NULL) AS', column_type, '), NULL) AS', column_name)
+            /* Default transformation for other types */
+            else catx(' ', 
+                'COALESCE(CAST(', 'COALESCE(' || column_name || ', NULL)', 'AS', column_type, column_format, ')) AS', column_name)
+        end;
+    quit;
+
+    %put NOTE: Transformations with date and datetime handling have been applied to processed_tab.;
+
+%mend process_transformations;
+
+%macro generate_sql;
+
+    /* Generate the WHERE clause */
+    proc sql noprint;
+        select catx(' ', filter_col, 'and')
+        into :where_clause separated by ' '
+        from processed_tab
+        where filter_col is not null;
+    quit;
+
+    /* Remove trailing 'and' from the WHERE clause */
+    %let where_clause = %sysfunc(prxchange(s/and$//, -1, &where_clause));
+
+    /* Generate SQL based on the conditions for trsf_col */
+    proc sql noprint;
+        select 
+            case 
+                when trsf_override ne '' then trsf_override
+                else trsf_col
+            end
+        into :columns separated by ', '
+        from processed_tab;
+    quit;
+
+    %let sql_t = select &columns from table_name where &where_clause;
+    %put NOTE: Generated SQL (trsf_col): &sql_t;
+
+    /* Generate SQL based on the conditions for column_name */
+    proc sql noprint;
+        select 
+            case 
+                when upcase(primary_key_flag) = 'Y' then column_name
+                else case 
+                    when trsf_override ne '' then column_name
+                    else column_name
+                end
+            end
+        into :columns_s separated by ', '
+        from processed_tab;
+    quit;
+
+    %let sql_s = select &columns_s from table_name where &where_clause;
+    %put NOTE: Generated SQL (column_name): &sql_s;
+
+%mend generate_sql;
+
+%macro print_processed_tab;
+
+    /* Print the contents of processed_tab */
+    proc print data=processed_tab noobs;
+        title "Contents of processed_tab";
+    run;
+
+%mend print_processed_tab;
