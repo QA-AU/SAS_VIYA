@@ -39,12 +39,14 @@ run;
 /* Step 5: Compare Actual vs Expected */
 proc sql;
   create table work.schema_comparison as
-  select a.name,
+  select coalesce(a.name, b.name) as name,
          a.type as expected_type,
          a.format as expected_format,
          b.type as actual_type,
          b.format as actual_format,
          case
+           when a.name is null then 'Extra Column'
+           when b.name is null then 'Missing Column'
            when a.type ne b.type then 'Type Mismatch'
            when upcase(a.format) ne upcase(b.format) then 'Format Mismatch'
            else 'Match'
