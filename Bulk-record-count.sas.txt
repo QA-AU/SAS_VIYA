@@ -1,0 +1,85 @@
+/* Step 1: Sample input table with libref + dataset names */
+data work.table_list;
+  length libref $8 data_set $32;
+  infile datalines;
+  input libref $ data_set $;
+  datalines;
+work temp1
+work temp2
+mylib sales2023
+;
+run;
+
+/* Step 2: Macro to iterate and count rows from each library.dataset */
+%macro count_rows;
+
+  data _null_;
+    set work.table_list nobs=n;
+    call symputx(cats('lib', _n_), libref);
+    call symputx(cats('ds', _n_), data_set);
+    call symputx('total', n);
+  run;
+
+  /* Empty result table */
+  data work.temp_table3;
+    length libref $8 data_set $32 table_rows 8;
+    stop;
+  run;
+
+  %do i = 1 %to &total;
+    %let thislib = &&lib&i;
+    %let thisds  = &&ds&i;
+
+    %let full_ds = &thislib..&thisds;
+
+    /* Check if dataset exists before proceeding */
+    %if %sysfunc(exist(&full_ds)) %then %do;
+
+      proc sql noprint;
+        select count(*) into :nrows from &full_ds;
+      quit;
+
+      data _append;
+        length libref $8 data_set $32 table_rows 8;
+        libref = "&thislib";
+        data_set = "&thisds";
+        table_rows = &nrows;
+      run;
+
+      proc append base=work.temp_table3 data=_append force; run;
+
+    %end;
+
+    %else %do;
+      %put WARNING: Dataset &full_ds does not exist. Skipping.;
+    %end;
+
+  %end;
+
+%mend;
+
+%count_rows
+
+/* Final output */
+proc print data=work.temp_table3;
+  title "Row Counts by Library.Dataset";
+run;
+
+
+/* Merge temp_table3 into existing table X based on libref + data_set */
+proc sql;
+  create table work.X_updated as
+  select a.*,
+         b.table_rows
+  from work.X a
+  left join work.temp_table3 b
+    on upcase(a.data_set) = upcase(b.data_set)
+   /* Optional: include libref if applicable
+      and upcase(a.libref) = upcase(b.libref) */
+  ;
+quit;
+
+/* Replace original X */
+data work.X;
+  set work.X_updated;
+run;
