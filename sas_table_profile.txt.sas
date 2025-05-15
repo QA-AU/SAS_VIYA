@@ -66,3 +66,45 @@ proc sql;
     from dictionary.columns
     where libname='WORK' and memname='YOUR_TABLE';
 quit;
+
+profiling_sql.txt.sas
+
+%macro profile_data_sql(lib=, table=);
+
+    proc sql;
+        create table profile_output as
+        select 
+            name as column_name length=32,
+            case type 
+                when 1 then 'N'
+                when 2 then 'C'
+            end as type length=1,
+            length as defined_length,
+            calculated_max as max_data_length,
+            missing_count,
+            distinct_count
+        from (
+            select 
+                name,
+                type,
+                length,
+                /* For character: compute max(length(var)) */
+                case 
+                    when type = 2 then 
+                        (select max(lengthn(vvaluex(name))) 
+                         from &lib..&table)
+                    else .
+                end as calculated_max,
+                (select count(*) - count(name) 
+                 from &lib..&table) as missing_count,
+                (select count(distinct vvaluex(name)) 
+                 from &lib..&table) as distinct_count
+            from dictionary.columns
+            where libname = upcase("&lib") and memname = upcase("&table")
+        );
+    quit;
+
+    title "Column Profile for &lib..&table";
+    proc print data=profile_output noobs; run;
+
+%mend profile_data_sql;
