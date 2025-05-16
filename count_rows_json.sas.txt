@@ -1,0 +1,33 @@
+/* Step 1: Ensure table_rows is initialized */
+data x;
+    set x;
+    table_rows = .;
+run;
+
+/* Step 2: Loop and generate code for each table name */
+data _null_;
+    set x;
+    call execute('
+        %nrstr(
+            %macro count_rows(tabname=);
+                %if %sysfunc(exist(work.' || strip(table_name) || ')) %then %do;
+                    proc sql noprint;
+                        select count(*) into :nobs from work.' || strip(table_name) || ';
+                    quit;
+                    data x;
+                        modify x;
+                        if table_name = "' || strip(table_name) || '" then table_rows = &nobs;
+                    run;
+                %end;
+                %else %do;
+                    data x;
+                        modify x;
+                        if table_name = "' || strip(table_name) || '" then table_rows = -1;
+                    run;
+                %end;
+            %mend;
+
+            %count_rows(tabname=' || strip(table_name) || ')
+        )
+    ');
+run;
