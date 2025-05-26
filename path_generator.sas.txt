@@ -1,0 +1,81 @@
+
+
+%global usr ;
+%let usr=USR-DL;
+%let dt='DDMMYYYY';  /* Placeholder for business date */
+
+
+data work.temp_1x;
+    length date_value $10 ssystem_value $100 data_set $100 ftype $5 delimtr $3 
+           envr $10 bucket_land $200 bucket_raw $200 bucket_conf $200;
+    infile datalines delimiter='09'x;
+    input date_value $ ssystem_value $ data_set $ ftype $ delimtr $ envr $ 
+          bucket_land $ bucket_raw $ bucket_conf $;
+datalines;
+00000000	sval1	dataset1	csv	QUESTION	staging1	bucket1	bucket2	bucket3
+00000000	sval2	dataset1	csv	QUESTION	staging1	bucket1	bucket2	bucket3
+;
+run;
+
+
+
+data work.paths_generated;
+    set work.temp_1x;
+
+    /* Parse date_value (format: DDMMYYYY) */
+    day1   = substr(date_value, 1, 2);
+    month1 = substr(date_value, 3, 2);
+    year1  = substr(date_value, 5, 4);
+
+    /* Generate CTL path */
+    path_ctl = cats(
+        "s3://", bucket_land,
+        "/environment=", envr,
+        "/application=ctl",
+        "/sourcesystem=", upcase(ssystem_value),
+        "/dataset=", upcase(data_set),
+        "/year=", year1,
+        "/month=", month1,
+        "/day=", day1,
+        "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.ctl"
+    );
+
+    /* LAND path */
+    path_data_land = cats(
+        "s3://", bucket_land,
+        "/environment=", envr,
+        "/application=busdata",
+        "/sourcesystem=", upcase(ssystem_value),
+        "/dataset=", upcase(data_set),
+        "/year=", year1,
+        "/month=", month1,
+        "/day=", day1,
+        "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.csv"
+    );
+
+    /* RAW path */
+    path_raw = cats(
+        "s3://", bucket_raw,
+        "/environment=", envr,
+        "/application=busdata",
+        "/sourcesystem=", upcase(ssystem_value),
+        "/dataset=", upcase(data_set),
+        "/year=", year1,
+        "/month=", month1,
+        "/day=", day1,
+        "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.csv"
+    );
+
+    /* CONF path - folder only, no file name */
+    path_conf = cats(
+        "s3://", bucket_conf,
+        "/environment=", envr,
+        "/application=busdata",
+        "/sourcesystem=", upcase(ssystem_value),
+        "/dataset=", upcase(data_set),
+        "/year=", year1,
+        "/month=", month1,
+        "/day=", day1,
+        "/"
+    );
+run;
