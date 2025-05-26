@@ -18,7 +18,6 @@ datalines;
 run;
 
 
-
 data work.paths_generated;
     set work.temp_1x;
 
@@ -27,7 +26,10 @@ data work.paths_generated;
     month1 = substr(date_value, 3, 2);
     year1  = substr(date_value, 5, 4);
 
-    /* Generate CTL path */
+    /* Normalize file extension from ftype column */
+    file_ext = strip(lowcase(ftype));
+
+    /* CTL path (always .ctl) */
     path_ctl = cats(
         "s3://", bucket_land,
         "/environment=", envr,
@@ -40,7 +42,7 @@ data work.paths_generated;
         "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.ctl"
     );
 
-    /* LAND path */
+    /* LAND path with dynamic extension */
     path_data_land = cats(
         "s3://", bucket_land,
         "/environment=", envr,
@@ -50,10 +52,10 @@ data work.paths_generated;
         "/year=", year1,
         "/month=", month1,
         "/day=", day1,
-        "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.csv"
+        "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.", file_ext
     );
 
-    /* RAW path */
+    /* RAW path with dynamic extension */
     path_raw = cats(
         "s3://", bucket_raw,
         "/environment=", envr,
@@ -63,10 +65,10 @@ data work.paths_generated;
         "/year=", year1,
         "/month=", month1,
         "/day=", day1,
-        "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.csv"
+        "/", upcase(ssystem_value), ".", upcase(data_set), ".", year1, month1, day1, "000000.", file_ext
     );
 
-    /* CONF path - folder only, no file name */
+    /* CONF path - folder only */
     path_conf = cats(
         "s3://", bucket_conf,
         "/environment=", envr,
