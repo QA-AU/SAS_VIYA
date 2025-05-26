@@ -1,0 +1,59 @@
+
+/* Start a CAS session named 'mySession' if not already started */
+cas mySession sessopts=(caslib=casuser timeout=1800);
+
+/* Assign a CASLIB if needed (adjust path/auth as per your setup) */
+libname casuser cas caslib="casuser";
+
+%macro load_s3_csv(bucket, path, delimiter, suffix, base_name);
+    %let cas_table = %sysfunc(catx(_, %upcase(&base_name), &suffix));
+
+    proc cas;
+        table.loadTable / 
+            path="&path"
+            importOptions={
+                fileType="csv",
+                delimiter="&delimiter",
+                getNames=true
+            }
+            casOut={
+                caslib="casuser",
+                name="&cas_table",
+                replace=true
+            }
+            accessorOptions={
+                bucket="&bucket",
+                region="ap-southeast-2",
+                authDomain="MyS3AuthDomain"
+            };
+    quit;
+
+    %put NOTE: Loaded &path from bucket &bucket into table &cas_table using delimiter &delimiter;
+%mend;
+
+
+data _null_;
+    set work.paths_generated;
+
+    if lowcase(ftype) = 'csv' then do;
+
+        /* Translate delimiter name to actual character */
+        length real_delim $1;
+        select (strip(upcase(delimtr)));
+            when ('COMMA')    real_delim = ',';
+            when ('SEMICOLON') real_delim = ';';
+            otherwise real_delim = ',';  /* Default fallback */
+        end;
+
+        /* Call macro with translated delimiter */
+        call execute(cats(
+            '%nrstr(%load_s3_csv)(', 
+            quote(trim(bucket_land)), ', ',
+            quote(trim(path_data_land)), ', ',
+            quote(trim(real_delim)), ', ',
+            'l, ',
+            quote(trim(data_set)), 
+            ');'
+        ));
+    end;
+run;
