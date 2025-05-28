@@ -1,0 +1,109 @@
+/* Step 1: Filter only 'csv' files */
+data work.csv_paths;
+    set work.pathgenerated;
+    if ftype = 'csv';
+    outname = cats(data_set, '_1');
+run;
+
+/* Step 2: Prepare macro to import, move, and flag status */
+%macro process_row(outname=, bucket=, objpath=);
+    %local rc;
+
+    %let rc = 0;
+
+    /* Import file */
+    %s3_importcsv(outname=&outname, bucket=&bucket, objpath=&objpath,
+        dlmstr=%nrquote(dlmstr='|'),
+        authdomain=AWSAUTH,
+        region=ap-southeast-1,
+        outlib=work
+    );
+
+    %if &syserr ne 0 %then %do;
+        %let rc = 1;
+    %end;
+
+    /* Move to S3_CAS if import succeeded */
+    %if &rc = 0 %then %do;
+        proc casutil;
+            load data=work.&outname casout="&outname" outcaslib="S3_CAS" replace;
+        quit;
+        %if &syscc ne 0 %then %let rc = 2;
+    %end;
+
+    /* Record result */
+    data work.load_status;
+        length outname $64 status $10;
+        outname = "&outname";
+        status = ifc(&rc=0, 'S3_CAS', 'failed');
+        output;
+    run;
+
+    proc append base=work.load_results data=work.load_status force; run;
+
+%mend;
+
+/* Step 3: Loop through rows and run the macro */
+data _null_;
+    set work.csv_paths;
+    call execute(cats('%process_row(outname=', outname,
+                      ', bucket=', bucket_land,
+                      ', objpath=', path_data_land, ');'));
+run;
+
+/* Step 4: Merge status back to pathgenerated */
+proc sql;
+    create table pathgen_updated as
+    select a.*, 
+           coalesce(b.status, a.load_landing) as load_landing
+    from work.pathgenerated as a
+    left join work.load_results as b
+    on cats(a.data_set, '_1') = b.outname;
+quit;
+
+/* Replace original table */
+data work.pathgenerated;
+    set pathgen_updated;
+run;
+
+
+
+
+/* Step 1: Filter for CSV file type */
+data work.csv_paths;
+    set work.pathgenerated;
+    if ftype = 'csv';
+run;
+
+/* Step 2: Loop through each filtered row */
+data _null_;
+    set work.csv_paths;
+    call execute('%nrstr(%s3_importcsv('
+                 || 'outname=' || strip(data_set) || '_1, '
+                 || 'bucket=' || strip(bucket_land) || ', '
+                 || 'objpath=' || strip(path_data_land) || ', '
+                 || "dlmstr=%nrquote(dlmstr='|'), "
+                 || 'authdomain=AWSAUTH, '
+                 || 'region=ap-southeast-1, '
+                 || 'outlib=work));');
+run;
+
+/* Step 3: Promote tables to S3_CAS */
+proc sql noprint;
+    select cats("data S3_CAS.", strip(data_set), "_1; set work.", strip(data_set), "_1; run;")
+    into :move_stmts separated by ' '
+    from work.csv_paths;
+quit;
+
+options mprint;
+%macro move_tables;
+    &move_stmts
+%mend;
+
+%move_tables
+
+/* Step 4: Update load_landing column */
+data work.pathgenerated;
+    modify pathgenerated;
+    if ftype = 'csv' then load_landing = 'S3_CAS';
+run;
