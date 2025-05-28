@@ -43,3 +43,47 @@
    %end;
 
 %mend;
+
+
+%macro ensure_caslib_exists(bucket=, caslib=);
+
+   %local caslib_exists region authdomain;
+   %let region = ap-southeast-2;
+   %let authdomain = AWSAUTHX;
+   %let caslib_exists = 0;
+
+   %if %length(&bucket) = 0 or %length(&caslib) = 0 %then %do;
+      %put ERROR: Both BUCKET and CASLIB must be provided.;
+      %return;
+   %end;
+
+   cas mysess;
+
+   /* NO macro result= – use simple out= dataset */
+   proc cas;
+      table.caslibInfo / out={caslibInfo=work._caslib_info};
+   run;
+
+   /* Check if caslib exists */
+   data _null_;
+      length mcaslib $64;
+      mcaslib = upcase("&caslib");
+      set work._caslib_info;
+      if upcase(caslib) = mcaslib then
+         call symputx("caslib_exists", 1);
+   run;
+
+   %if &caslib_exists = 0 and %upcase(&caslib) ne CASUSER %then %do;
+      caslib &caslib datasource=(
+         srctype="s3",
+         authdomain="&authdomain",
+         region="&region",
+         bucket="&bucket"
+      ) subdirs;
+      %put NOTE: CASLIB &caslib created for bucket &bucket.;
+   %end;
+   %else %do;
+      %put NOTE: CASLIB &caslib already exists.;
+   %end;
+
+%mend;
