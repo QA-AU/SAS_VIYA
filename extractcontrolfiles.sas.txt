@@ -1,0 +1,61 @@
+%macro extract_ctl2;
+    %local dsid nobs rc i fname_varnum ctl_varnum bucket_varnum fname path_ctl bucket_name abspath file_not_found;
+
+    %let dsid = %sysfunc(open(work.paths_generated));
+    
+    %if &dsid %then %do;
+        %let nobs = %sysfunc(attrn(&dsid, nobs));
+        %let fname_varnum  = %sysfunc(varnum(&dsid, data_set));
+        %let ctl_varnum    = %sysfunc(varnum(&dsid, path_ctl));
+        %let bucket_varnum = %sysfunc(varnum(&dsid, bucket_name));
+
+        %if &fname_varnum = 0 or &ctl_varnum = 0 or &bucket_varnum = 0 %then %do;
+            %put [extract_ctl2] ERROR: One or more required variables (data_set, path_ctl, bucket_name) not found.;
+            %let rc = %sysfunc(close(&dsid));
+            %return;
+        %end;
+
+        %do i = 1 %to &nobs;
+            %let rc = %sysfunc(fetchobs(&dsid, &i));
+            %let fname       = %sysfunc(getvarc(&dsid, &fname_varnum));
+            %let path_ctl    = %sysfunc(getvarc(&dsid, &ctl_varnum));
+            %let bucket_name = %sysfunc(getvarc(&dsid, &bucket_varnum));
+            %let abspath     = s3://%sysfunc(catx(/, &bucket_name, &path_ctl));
+            %let file_not_found = 0;
+
+            filename myS3 "&abspath" authdomain="AWSAUTH" recfm=v lrecl=32767 termstr=LF;
+
+            data _null_;
+                length file_content $32767;
+                infile myS3 end=eof;
+                input;
+                file_content = catx(' ', file_content, _infile_);
+                if eof then call symputx('file_content', file_content);
+                if _ERROR_ then call symputx('file_not_found', 1);
+            run;
+
+            %if &file_not_found = 1 %then %do;
+                %put [extract_ctl2] WARNING: Unable to access file at &abspath. Skipping.;
+                filename myS3 clear;
+                %goto next_iter;
+            %end;
+
+            data work.paths_generated;
+                modify work.paths_generated;
+                by data_set;
+                if data_set = "&fname" then do;
+                    ctl_data = symget('file_content');
+                    replace;
+                end;
+            run;
+
+            %next_iter:
+            filename myS3 clear;
+        %end;
+
+        %let rc = %sysfunc(close(&dsid));
+    %end;
+    %else %do;
+        %put [extract_ctl2] ERROR: Unable to open dataset work.paths_generated;
+    %end;
+%mend extract_ctl2;
