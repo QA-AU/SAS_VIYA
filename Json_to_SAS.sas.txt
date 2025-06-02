@@ -1,0 +1,103 @@
+%macro flatten_json_to_cas(jsonlib=myjson, out_flat=flat_json, caslib=casuser, promotename=flat_json);
+
+    /* Step 1: Get JSON component tables */
+    proc sql noprint;
+        select memname 
+        into :json_tables separated by ' '
+        from dictionary.tables
+        where libname = "%upcase(&jsonlib)";
+    quit;
+
+    /* Step 2: Generate PROC SQL join code to flatten */
+    data _null_;
+        length join_code $10000;
+        join_code = 'proc sql; create table work.&out_flat as select * from &jsonlib..root as a';
+
+        %let i = 1;
+        %do %while (%scan(&json_tables, &i) ne );
+            %let tbl = %scan(&json_tables, &i);
+            %if &tbl ne ROOT and %index(&tbl, ATTRIB) = 0 %then %do;
+                join_code = catx(' ',
+                    join_code,
+                    'left join &jsonlib..', lowcase("&tbl"), 'as t&i',
+                    'on a.ordinal_root = t&i..ordinal_root'
+                );
+            %end;
+            %let i = %eval(&i + 1);
+        %end;
+
+        join_code = catx(' ', join_code, '; quit;');
+        call execute(join_code);
+    run;
+
+    /* Step 3: Load into CAS and promote */
+    proc casutil;
+        droptable casdata="&promotename" incaslib="&caslib" quiet;
+        load data=work.&out_flat
+             casout="&promotename"
+             caslib="&caslib"
+             promote;
+    run;
+
+    %put NOTE: Flat JSON promoted to CASLIB &caslib as &promotename;
+
+%mend;
+
+
+///////////
+/* Step 1: Copy JSON rows from libname JSON to a WORK table */
+data work.raw_json;
+    set myjson.root;
+run;
+
+/* Step 2: Flatten using PROC PYTHON */
+proc python;
+submit;
+
+import pandas as pd
+import json
+
+# Step 2.1: Read SAS dataset (from libname JSON) into pandas
+df = SAS.sd2df("work.raw_json")
+
+# Step 2.2: Assume there is a column called "json" that has raw JSON text per row
+# If not, adapt this to the actual structure from your JSON lib
+
+# If JSON content is split across variables, you'll need to reconstruct it.
+# For example, if df has columns like 'name', 'address.city', etc. from the JSON lib,
+# pandas.json_normalize is not needed — it's already flattened.
+
+# But if one of the columns contains a nested JSON string (like a 'details' field), flatten it:
+if "details" in df.columns:
+    # Apply json.loads and normalize
+    flattened_rows = pd.json_normalize(df['details'].apply(json.loads))
+    
+    # Merge flattened data back with original top-level columns (optional)
+    df = df.drop(columns=["details"]).reset_index(drop=True)
+    flat_df = pd.concat([df, flattened_rows], axis=1)
+else:
+    # If already flattened by libname JSON, just use df as is
+    flat_df = df
+
+# Step 2.3: Write flattened dataframe back to WORK library
+SAS.df2sd(flat_df, table="flat_json", libref="work")
+
+endsubmit;
+run;
+
+
+/////////////
+
+proc python;
+submit;
+import boto3
+import pandas as pd
+import io, json
+
+s3 = boto3.client('s3')
+obj = s3.get_object(Bucket='your-bucket-name', Key='your/prefix/file.json')
+data = json.load(io.BytesIO(obj['Body'].read()))
+df = pd.json_normalize(data)
+df.to_csv('/tmp/flat_json.csv', index=False)
+endsubmit;
+run;
