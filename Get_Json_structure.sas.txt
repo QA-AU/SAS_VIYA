@@ -1,0 +1,61 @@
+with a raw JSON string and just want to visualize its structure (not the parsed CAS tables), 
+you can flatten the schema (keys only) using Python directly — fast and simple.
+
+Output :
+
+id
+name
+address.city
+address.zip
+orders[].order_id
+orders[].items[].item_id
+orders[].items[].qty
+
+
+proc python;
+submit;
+
+import json
+
+# Example: Your raw JSON string
+raw_json = '''
+{
+  "id": 101,
+  "name": "Alice",
+  "address": {
+    "city": "New York",
+    "zip": "10001"
+  },
+  "orders": [
+    {
+      "order_id": 1,
+      "items": [
+        {"item_id": "A1", "qty": 2},
+        {"item_id": "B1", "qty": 1}
+      ]
+    }
+  ]
+}
+'''
+
+# Parse JSON
+data = json.loads(raw_json)
+
+# Recursive function to walk through keys
+def show_keys(obj, prefix=''):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            show_keys(v, f"{prefix}{k}.")
+    elif isinstance(obj, list):
+        if obj:
+            show_keys(obj[0], prefix + '[].')
+        else:
+            print(f"{prefix}[]")
+    else:
+        print(prefix.rstrip('.'))
+
+# Print structure
+show_keys(data)
+
+endsubmit;
+run;

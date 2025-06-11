@@ -1,0 +1,95 @@
+Dynamically Load & Join JSON Tables
+
+proc python;
+submit;
+
+import pandas as pd
+
+# Step 1: List all tables in the JSON CASLib
+tables = cas.table.tableInfo(caslib="json")["TableName"].tolist()
+
+# Step 2: Load all tables into a dict of DataFrames
+df_map = {tbl: cas.CASTable(tbl, caslib="json").to_frame() for tbl in tables}
+
+# Step 3: Example of joining selected related tables
+# You'll need to define join logic based on table names or schema
+
+# Assume we want to join everything starting from 'root'
+flat_df = df_map["root"]
+
+# Merge all child tables that contain '_path_' and '_ordinal_' (simplistic logic)
+for tbl_name, child_df in df_map.items():
+    if tbl_name != "root" and "_path_" in child_df.columns:
+        flat_df = pd.merge(flat_df, child_df, on="_path_", how="left", suffixes=("", f"_{tbl_name}"))
+
+# Step 4: Upload result back to CAS
+cas.upload_frame(flat_df, casout={"name": "json_flat_auto", "caslib": "casuser", "replace": True})
+
+endsubmit;
+run;
+
+
+
+///////////
+
+Revised Flattening Template: Multi-table Join in proc python
+proc python;
+submit;
+
+import pandas as pd
+
+# Step 1: Load all relevant CAS tables to pandas
+root_df = cas.CASTable("root", caslib="json").to_frame()
+orders_df = cas.CASTable("orders", caslib="json").to_frame()
+items_df = cas.CASTable("orders_items", caslib="json").to_frame()
+
+# Step 2: Join on _path_ and _ordinal_ keys
+orders_joined = pd.merge(orders_df, root_df, on='_path_', how='left')
+items_joined = pd.merge(items_df, orders_df[["_path_", "_ordinal_"]], left_on='_path_', right_on='_path_', how='left')
+
+# Step 3: Optional – merge all together (flatten)
+flat_df = orders_joined.merge(items_joined, on='_path_', suffixes=('_order', '_item'))
+
+# Step 4: Upload to CAS
+cas.upload_frame(flat_df, casout={"name": "json_flattened", "caslib": "casuser", "replace": True})
+
+endsubmit;
+run;
+
+Notes:
+
+Field	Purpose
+_path_	Links rows from child to parent
+_ordinal_	Order of arrays (e.g. orders[0])
+_table_	Table origin, may help with debugging
+Result
+You get a fully flattened table with data from root + orders + orders_items in one CAS table.
+
+///////////
+EXPLODE
+
+import pandas as pd
+
+# Step 1: Construct DataFrame
+df = pd.DataFrame([{
+    "id": 1,
+    "name": "Alice",
+    "orders": [
+        {"order_id": 100, "amount": 250},
+        {"order_id": 101, "amount": 300}
+    ]
+}])
+
+# Step 2: Use explode on 'orders'
+df_exploded = df.explode("orders", ignore_index=True)
+
+# Step 3: Normalize the 'orders' dict
+orders_df = pd.json_normalize(df_exploded["orders"])
+
+# Step 4: Combine with other columns
+result = df_exploded.drop(columns=["orders"]).join(orders_df)
+
+print(result)
+
+
+Notes:

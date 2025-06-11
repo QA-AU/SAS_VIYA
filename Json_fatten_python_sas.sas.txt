@@ -1,0 +1,67 @@
+
+
+%macro FlattenJSONFromS3(bucket=, path=, region=us-east-1, authdomain=AWS_S3_AUTH, outtable=json_flat, fields=id name);
+
+  /* Step 1: Mount S3 bucket using CASLIB */
+  caslib s3json datasource=(
+    srctype="s3",
+    region="&region",
+    bucket="&bucket",
+    authdomain="&authdomain"
+  ) subdirs=true;
+
+  /* Step 2: Point to the JSON file */
+  filename s3file caslib="s3json" path="&path";
+
+  /* Step 3: Load JSON file into CAS as raw table */
+  proc casutil;
+    load file=s3file
+    casout="raw_json"
+    caslib="casuser"
+    import json;
+  quit;
+
+  /* Step 4: Flatten using only selected fields inside Python */
+  proc python;
+  submit;
+
+  import pandas as pd
+  import json
+
+  # Step 1: Load the root CAS table (auto-created from JSON)
+  df = cas.CASTable("raw_json", caslib="casuser").to_frame()
+
+  # Step 2: Find the JSON-containing column
+  json_col = [col for col in df.columns if df[col].dtype == 'object'][0]
+
+  # Step 3: Parse JSON strings into Python dicts
+  df["parsed"] = df[json_col].apply(json.loads)
+
+  # Step 4: Flatten only selected fields (from macro variable)
+  selected_fields = "&fields".split()
+  flat = pd.json_normalize(df["parsed"], sep=".", meta=selected_fields)
+
+  # Step 5: Upload flattened data to CAS
+  cas.upload_frame(flat, casout={"name": "&outtable", "caslib": "casuser", "replace": True})
+
+  endsubmit;
+  run;
+
+%mend;
+
+
+%FlattenJSONFromS3(
+  bucket=my-bucket,
+  path=api/data/sales.json,
+  region=us-east-1,
+  authdomain=AWS_S3_AUTH,
+  outtable=sales_flat,
+  fields=id name address.city metadata.created
+);
+
+
+Notes
+fields=: space-separated list of fields to flatten from the JSON
+JSON structure must contain the listed fields; use . for nested keys (e.g. address.city)
+raw_json is the temp loaded table
+Final output is in casuser.&outtable
