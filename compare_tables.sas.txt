@@ -1,0 +1,177 @@
+/**
+ * Macro: %compare_large_tables_detailed
+ * Compares two CAS tables by primary key and specified columns
+ * Outputs mismatches with row-level detail
+ */
+
+%macro compare_large_tables_detailed(
+    caslib=,
+    table_a=,
+    table_b=,
+    pk=,
+    cols=,
+    outdiff=diff_result
+);
+
+    %put DEV LOGS 01 > Creating MD5 hashes for both tables;
+    %let cols_space = %sysfunc(tranwrd(&cols, %str(,), %str( )));
+
+    data &caslib..a_hashed;
+        set &caslib..&table_a(keep=&pk &cols_space);
+        length row_hash $32;
+        row_hash = md5(catx('|', &cols_space));
+    run;
+
+    data &caslib..b_hashed;
+        set &caslib..&table_b(keep=&pk &cols_space);
+        length row_hash $32;
+        row_hash = md5(catx('|', &cols_space));
+    run;
+
+    %put DEV LOGS 02 > Comparing hashed rows using PROC FEDSQL;
+    proc fedsql sessref=mysess;
+        create table &caslib..&outdiff as
+        select coalesce(a.&pk, b.&pk) as &pk,
+               a.row_hash as a_hash,
+               b.row_hash as b_hash
+        from &caslib..a_hashed a
+        full join &caslib..b_hashed b
+        on a.&pk = b.&pk
+        where a.row_hash is null or b.row_hash is null or a.row_hash ne b.row_hash;
+    quit;
+
+%mend;
+
+/**
+ * Macro: %call_table_compare_from_map
+ * Reads metadata table, compares each source-target pair using MD5 hashes,
+ * logs sample mismatches and performs detailed comparison for top N differences
+ * Includes timestamp, JSON-style column differences, and row count in logs
+ */
+
+%macro call_table_compare_from_map(outprefix=compare_, top_n=5);
+
+    %local caslib map_table log_table;
+    %let caslib = s3_cas;
+    %let map_table = table_map_sql;
+    %let log_table = &runid._compare_summary_log;
+
+    %put DEV LOGS 03 > Checking if log table exists and creating if needed;
+    %if %sysfunc(exist(&caslib..&log_table)) = 0 %then %do;
+        data &caslib..&log_table;
+            length table_a table_b $64 first_diff_col $64 val_a val_b $500 col_diff_json $1000 timestamp $30;
+            retain rowcount 8;
+            if 0 then set &caslib..&log_table;
+        run;
+
+        proc casutil;
+            save casdata="&log_table" incaslib="&caslib" replace;
+        run;
+    %end;
+
+    %put DEV LOGS 04 > Reading table mappings;
+    proc sql noprint;
+        select distinct srctnable, trgttable
+        into :src_list separated by '|', :tgt_list separated by '|'
+        from &map_table;
+        %let num_tables = &sqlobs;
+    quit;
+
+    %do i = 1 %to &num_tables;
+        %let src = %scan(&src_list, &i, |);
+        %let tgt = %scan(&tgt_list, &i, |);
+
+        %put DEV LOGS 05 > Processing table pair &src vs &tgt;
+        proc sql noprint;
+            select srccolumn into :pk
+            from &map_table
+            where srctnable="&src" and trgttable="&tgt" and upcase(ispk)="Y";
+
+            select srccolumn into :cols separated by ','
+            from &map_table
+            where srctnable="&src" and trgttable="&tgt" and upcase(ispk) ne "Y";
+        quit;
+
+        %compare_large_tables_detailed(
+            caslib=&caslib,
+            table_a=&src,
+            table_b=&tgt,
+            pk=&pk,
+            cols=&cols,
+            outdiff=&outprefix.&src._vs_&tgt
+        )
+
+        %put DEV LOGS 06 > Extracting top &top_n mismatched PKs;
+        proc fedsql sessref=mysess;
+            create table &caslib.._top_ids as
+            select &pk from &caslib..&outprefix.&src._vs_&tgt limit &top_n;
+        quit;
+
+        %put DEV LOGS 07 > Joining to source and target tables for top mismatches;
+        data &caslib.._a_detail;
+            merge &caslib..&src(in=a) &caslib.._top_ids(in=b);
+            by &pk;
+            if a and b;
+        run;
+
+        data &caslib.._b_detail;
+            merge &caslib..&tgt(in=a) &caslib.._top_ids(in=b);
+            by &pk;
+            if a and b;
+        run;
+
+        %put DEV LOGS 08 > Creating detailed diff row with JSON output;
+        data _log_sample;
+            merge &caslib.._a_detail(rename=(%let i=1; %do %while (%scan(&cols, &i, ',') ne ); %let col=%scan(&cols, &i); &col=&col._a %let i=%eval(&i+1); %end;))
+                  &caslib.._b_detail(rename=(%let i=1; %do %while (%scan(&cols, &i, ',') ne ); %let col=%scan(&cols, &i); &col=&col._b %let i=%eval(&i+1); %end;));
+            by &pk;
+            length table_a table_b first_diff_col $64 val_a val_b $500 col_diff_json $1000 timestamp $30;
+            table_a = "&src";
+            table_b = "&tgt";
+            timestamp = put(datetime(), datetime20.);
+
+            col_diff_json = '{';
+            %let j=1;
+            %do %while (%scan(&cols, &j, ',') ne );
+                %let col = %scan(&cols, &j);
+                if &col._a ne &col._b then do;
+                    if first_diff_col = '' then do;
+                        first_diff_col = "&col";
+                        val_a = vvaluex("&col._a");
+                        val_b = vvaluex("&col._b");
+                    end;
+                    col_diff_json = catx(',', col_diff_json, cats('"',"&col",'":"',strip(vvaluex("&col._a")),'|',strip(vvaluex("&col._b")),'"'));
+                end;
+                %let j = %eval(&j + 1);
+            %end;
+            col_diff_json = cats(col_diff_json, '}');
+        run;
+
+        %put DEV LOGS 09 > Counting total mismatches and finalizing log entry;
+        proc sql noprint;
+            select count(*) into :rowcount
+            from &caslib..&outprefix.&src._vs_&tgt;
+        quit;
+
+        data _log_sample;
+            set _log_sample;
+            rowcount = &rowcount;
+        run;
+
+        %put DEV LOGS 10 > Saving log and sample to output libraries;
+        data mylib.sample_diff_&src._vs_&tgt;
+            set _log_sample;
+        run;
+
+        data &caslib..&log_table;
+            set &caslib..&log_table _log_sample;
+        run;
+
+        proc casutil;
+            save casdata="&log_table" incaslib="&caslib" replace;
+            droptable casdata="_top_ids" incaslib="&caslib" quiet;
+        run;
+
+    %end;
+
+%mend;
