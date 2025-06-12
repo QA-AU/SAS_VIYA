@@ -1,0 +1,111 @@
+/**
+ * Macro: %compare_sql_queries
+ * Description:
+ *   Compares two SQL queries and logs sampled differences to a union table and log file.
+ * Parameters:
+ *   sql1        - First SQL string (source)
+ *   sql2        - Second SQL string (target)
+ *   srctable    - Source table name (for logging)
+ *   trgttable   - Target table name (for logging)
+ *   pk          - Comma-separated primary key column(s)
+ *   sample_n    - Number of differing PKs to sample (default 5)
+ *   log_suffix  - Global suffix used for naming the log table
+ */
+
+%macro compare_sql_queries(sql1=, sql2=, srctable=, trgttable=, pk=, sample_n=5, log_suffix=);
+
+    %local sql1_tagged sql2_tagged final_sql_s final_sql_t final_where out_table log_table rand_num;
+    
+    %put DEV LOG 00 > Using log suffix: &log_suffix;
+    %let log_table = diff_log_&log_suffix;
+
+    %put DEV LOG 01 > Finding rows in SQL1 not in SQL2 using EXCEPT;
+    proc sql;
+        create table work._diff as
+        &sql1
+        except corr
+        &sql2;
+    quit;
+
+    %put DEV LOG 02 > Sampling &sample_n PKs from work._diff;
+    proc sql;
+        create table work._sample_pk as
+        select distinct &pk
+        from work._diff
+        order by ranuni(1234)
+        outobs=&sample_n;
+    quit;
+
+    %put DEV LOG 03 > Creating WHERE clause from first row in sample;
+    data _null_;
+        set work._sample_pk(obs=1);
+        length where_clause $500;
+        where_clause = '';
+
+        %let i = 1;
+        %do %while (%scan(&pk, &i, ,) ne );
+            %let key = %scan(&pk, &i, ,);
+            where_clause = catx(' and ', where_clause, cats("&key = '", strip(&key), "'"));
+            %let i = %eval(&i + 1);
+        %end;
+
+        call symputx('final_where', where_clause, 'g');
+    run;
+
+    %put DEV LOG 04 > Adding compare_label and wildcard SELECT to each SQL;
+    %let sql1_tagged = %sysfunc(tranwrd(&sql1, select, select 'source' as compare_label, *));
+    %let sql2_tagged = %sysfunc(tranwrd(&sql2, select, select 'target' as compare_label, *));
+
+    %put DEV LOG 05 > Creating final SQLs with WHERE clause;
+    %let final_sql_s = &sql1_tagged where &final_where;
+    %let final_sql_t = &sql2_tagged where &final_where;
+
+    %put DEV LOG 06 > Creating random output table name;
+    %let rand_num = %sysfunc(putn(%sysfunc(ranuni(0)*90 + 10), z2.));
+    %let out_table = diff&rand_num;
+
+    %put DEV LOG 07 > Creating union of sampled rows in mylib.&out_table;
+    proc sql;
+        create table mylib.&out_table as
+        &final_sql_s
+        union all corr
+        &final_sql_t;
+    quit;
+
+    %put DEV LOG 08 > Counting rows from original queries and difference;
+    proc sql noprint;
+        select count(*) into :record_s from (&sql1);
+        select count(*) into :record_f from (&sql2);
+        select count(*) into :record_diff from work._diff;
+    quit;
+
+    %put DEV LOG 09 > Creating log table if not exists: mylib.&log_table;
+    %if %sysfunc(exist(mylib.&log_table)) = 0 %then %do;
+        data mylib.&log_table;
+            length srctable trgttable final_sql_s final_sql_t $500 out_table $40;
+            format record_s record_f record_diff 8. update_time datetime20.;
+            stop;
+        run;
+    %end;
+
+    %put DEV LOG 10 > Inserting log row into mylib.&log_table;
+    data _append_row;
+        length srctable trgttable final_sql_s final_sql_t $500 out_table $40;
+        format record_s record_f record_diff 8. update_time datetime20.;
+
+        srctable   = "&srctable";
+        trgttable  = "&trgttable";
+        final_sql_s = "&final_sql_s";
+        final_sql_t = "&final_sql_t";
+        out_table   = "&out_table";
+        record_s    = &record_s;
+        record_f    = &record_f;
+        record_diff = &record_diff;
+        update_time = datetime();
+    run;
+
+    proc append base=mylib.&log_table data=_append_row force; run;
+
+    %put ✅ DEV LOG COMPLETE > Data saved in mylib.&out_table and logged in mylib.&log_table;
+
+%mend compare_sql_queries;
