@@ -1,0 +1,46 @@
+Pass json as text
+
+%macro flatten_json_inline(json=, outtable=flat_json, fields=id name address.city);
+
+  proc python;
+  submit;
+
+  import pandas as pd
+  import json
+
+  # Step 1: Paste JSON string here
+  raw_json = %str(&json)
+
+  # Step 2: Load JSON into Python object
+  data = json.loads(raw_json)
+
+  # Ensure it's a list
+  if not isinstance(data, list):
+      data = [data]
+
+  # Step 3: Flatten specific fields only
+  field_list = "&fields".split()
+  flat = pd.json_normalize(data, sep=".", meta=field_list, errors="ignore")
+
+  # Step 4: Keep rest of JSON in a variant column
+  flat["raw_variant"] = data
+
+  # Step 5: Upload result to CAS
+  cas.upload_frame(flat, casout={"name": "&outtable", "caslib": "casuser", "replace": True})
+
+  endsubmit;
+  run;
+
+%mend;
+
+%flatten_json_inline(
+  json={
+    "id": 1,
+    "name": "Alice",
+    "address": { "city": "New York", "zip": "10001" },
+    "metadata": { "created": "2024-01-01", "tags": ["vip"] }
+  },
+  outtable=my_inline_flat,
+  fields=id name address.city metadata.created
+);
+

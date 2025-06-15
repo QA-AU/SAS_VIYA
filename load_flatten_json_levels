@@ -1,0 +1,60 @@
+%macro load_flatten_json_levels(jsonfile=, outtable=json_flat, level=1);
+
+  /* Step 1: Load raw JSON file into CAS */
+  proc casutil;
+    load file="&jsonfile"
+    casout="raw_json"
+    caslib="casuser"
+    import
+    json;
+  quit;
+
+  /* Step 2: Flatten JSON to specified depth */
+  proc python;
+  submit;
+
+  import pandas as pd
+  import json
+
+  # Step 1: Load raw_json CAS table
+  df = cas.CASTable("raw_json", caslib="casuser").to_frame()
+
+  # Step 2: Detect column with JSON string
+  json_col = next(col for col in df.columns if df[col].dtype == 'object')
+
+  # Step 3: Parse JSON into Python dict
+  df["parsed"] = df[json_col].apply(json.loads)
+
+  # Step 4: Flatten only to specified depth
+  flat_df = pd.json_normalize(df["parsed"], max_level=&level, sep=".")
+
+  # Step 5: Preserve original structure in variant column
+  flat_df["raw_variant"] = df["parsed"]
+
+  # Step 6: Upload to CAS
+  cas.upload_frame(flat_df, casout={"name": "&outtable", "caslib": "casuser", "replace": True})
+
+  endsubmit;
+  run;
+
+%mend;
+
+%load_flatten_json_levels(
+  jsonfile=/files/sales.json,
+  outtable=sales_flat_level1,
+  level=1
+);
+
+%load_flatten_json_levels(
+  jsonfile=/files/sales.json,
+  outtable=sales_flat_level2,
+  level=2
+);
+
+
+| Param         | Meaning                                                       |
+| ------------- | ------------------------------------------------------------- |
+| `level=1`     | Only flatten top-level keys (`user.name`, `address.city`)     |
+| `level=2`     | Also flattens nested objects like `orders[0].items[0].price`  |
+| Deeper levels | Leaves deeply nested fields (like 3+ levels) in `raw_variant` |
+

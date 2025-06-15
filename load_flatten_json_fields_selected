@@ -1,0 +1,47 @@
+%macro load_flatten_json_fields(jsonfile=, outtable=json_flat, fields=id name address.city metadata.created);
+
+  /* Step 1: Load JSON file into CAS */
+  proc casutil;
+    load file="&jsonfile"
+    casout="raw_json"
+    caslib="casuser"
+    import
+    json;
+  quit;
+
+  /* Step 2: Flatten only specified fields */
+  proc python;
+  submit;
+
+  import pandas as pd
+  import json
+
+  # Step 1: Read raw_json table into pandas
+  df = cas.CASTable("raw_json", caslib="casuser").to_frame()
+
+  # Step 2: Find JSON column (string object)
+  json_col = next(col for col in df.columns if df[col].dtype == 'object')
+
+  # Step 3: Parse JSON string into dict
+  df["parsed"] = df[json_col].apply(json.loads)
+
+  # Step 4: Flatten only the specified field paths
+  field_list = "&fields".split()
+  flat_df = pd.json_normalize(df["parsed"], meta=field_list, sep=".", errors="ignore")
+
+  # Step 5: Keep full parsed JSON in a variant column
+  flat_df["raw_variant"] = df["parsed"]
+
+  # Step 6: Upload final result to CAS
+  cas.upload_frame(flat_df, casout={"name": "&outtable", "caslib": "casuser", "replace": True})
+
+  endsubmit;
+  run;
+
+%mend;
+
+%load_flatten_json_fields(
+  jsonfile=/files/data/user.json,
+  outtable=user_flat,
+  fields=id name address.city metadata.created
+);

@@ -1,0 +1,38 @@
+%macro flatten_ndjson_inline(ndjson=, outtable=flat_ndjson, fields=id name);
+
+  proc python;
+  submit;
+
+  import pandas as pd
+  import json
+  from io import StringIO
+
+  # Step 1: Paste NDJSON string (each line is a valid JSON object)
+  raw_ndjson = """&ndjson"""
+
+  # Step 2: Read NDJSON into pandas
+  df = pd.read_json(StringIO(raw_ndjson), lines=True)
+
+  # Step 3: Flatten selected fields only
+  field_list = "&fields".split()
+  flat = pd.json_normalize(df.to_dict(orient='records'), meta=field_list, sep=".", errors="ignore")
+
+  # Step 4: Add raw_variant if needed
+  flat["raw_variant"] = df.to_dict(orient='records')
+
+  # Step 5: Upload to CAS
+  cas.upload_frame(flat, casout={"name": "&outtable", "caslib": "casuser", "replace": True})
+
+  endsubmit;
+  run;
+
+%mend;
+
+
+%flatten_ndjson_inline(
+  ndjson=
+{"id": 1, "name": "Alice", "address": {"city": "NY"}}
+{"id": 2, "name": "Bob", "address": {"city": "LA"}},
+  outtable=test_ndjson,
+  fields=id name address.city
+);
