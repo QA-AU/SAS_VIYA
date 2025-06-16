@@ -1,0 +1,42 @@
+/* Step 1: Register S3 CASLIB */
+caslib myS3Lib datasource=(
+  srctype="s3",
+  region="your-region",
+  bucket="your-bucket",
+  authdomain="your-authdomain"
+);
+
+
+/* Step 2: Use Python to loop over all S3 files and load them as NDJSON */
+proc python;
+submit;
+
+import re
+
+# List all files in the S3 CASLIB
+files = cas.table.fileInfo(caslib="myS3Lib").FileInfo
+ndjson_files = [f["Name"] for f in files if not f["Name"].endswith(".json")]
+
+for fname in ndjson_files:
+    table_name = re.sub(r'\W+', '_', fname)  # sanitize to valid SAS table name
+    print(f"Loading NDJSON file: {fname} → table: {table_name}")
+
+    try:
+        cas.table.loadTable(
+            path=fname,
+            caslib="myS3Lib",
+            importOptions={
+                "fileType": "json",
+                "JSONType": "njson"  # Required for NDJSON
+            },
+            casOut={
+                "name": table_name,
+                "caslib": "casuser",
+                "replace": True
+            }
+        )
+    except Exception as e:
+        print(f"Failed to load {fname}: {e}")
+
+endsubmit;
+run;
