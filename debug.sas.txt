@@ -51,3 +51,42 @@ except Exception as e:
 
 endsubmit;
 run;
+
+
+proc python;
+submit;
+
+# Attach to existing CAS session manually
+from swat import CAS
+
+# NOTE: Only works if your CAS session is already started
+session = CAS()  # defaults to current CAS connection
+
+# NDJSON file to load (no .json extension)
+fname = "data/ndjson/sample_log_01"
+tblname = "sample_log_01"
+
+try:
+    print(f"📥 Loading {fname} as table {tblname}...")
+
+    session.table.loadTable(
+        path=fname,
+        caslib="myS3Lib",
+        importOptions={
+            "fileType": "json",
+            "JSONType": "njson"
+        },
+        casOut={
+            "name": tblname,
+            "caslib": "casuser",
+            "replace": True
+        }
+    )
+
+    print("✅ Loaded successfully!")
+
+except Exception as e:
+    print(f"❌ Error loading {fname}: {e}")
+
+endsubmit;
+run;
