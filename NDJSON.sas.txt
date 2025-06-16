@@ -41,4 +41,44 @@ for fname in ndjson_files:
 endsubmit;
 run;
 
+/////////
+proc python;
+submit;
+
+import re
+
+# Get full list of files in the bucket
+all_files = cas.table.fileInfo(caslib="myS3Lib").FileInfo
+
+# Filter files under the sub-path and no .json extension
+ndjson_files = [
+    f["Name"] for f in all_files
+    if f["Name"].startswith("data/ndjson/")
+       and not f["Name"].endswith(".json")
+]
+
+# Load each NDJSON file
+for fname in ndjson_files:
+    table_name = re.sub(r'\W+', '_', fname.split('/')[-1])  # safe name
+    print(f"🔄 Loading {fname} as NDJSON → {table_name}")
+
+    try:
+        cas.table.loadTable(
+            path=fname,
+            caslib="myS3Lib",
+            importOptions={
+                "fileType": "json",
+                "JSONType": "njson"
+            },
+            casOut={
+                "name": table_name,
+                "caslib": "casuser",
+                "replace": True
+            }
+        )
+    except Exception as e:
+        print(f"❌ Failed loading {fname}: {e}")
+
+endsubmit;
+run;
 
