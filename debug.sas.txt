@@ -16,3 +16,38 @@ except Exception as e:
 
 endsubmit;
 run;
+
+
+
+/* Step 2: Load one NDJSON file using PROC PYTHON */
+proc python;
+submit;
+
+# One NDJSON file under S3 path — update this
+fname = "data/ndjson/sample_log_01"  # relative to bucket root
+tblname = "sample_log_01"           # desired CAS table name
+
+try:
+    print(f"📥 Loading: {fname} → {tblname}")
+
+    sas.cas.table.loadTable(
+        path=fname,
+        caslib="myS3Lib",
+        importOptions={
+            "fileType": "json",
+            "JSONType": "njson"
+        },
+        casOut={
+            "name": tblname,
+            "caslib": "casuser",
+            "replace": True
+        }
+    )
+
+    print("✅ Load successful.")
+
+except Exception as e:
+    print(f"❌ Error loading {fname}: {e}")
+
+endsubmit;
+run;
