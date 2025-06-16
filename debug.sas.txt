@@ -1,0 +1,18 @@
+proc python;
+submit;
+
+# Try one known-good file manually
+try:
+    cas.table.loadTable(
+        path="data/ndjson/your_sample_file",   # replace with actual name
+        caslib="myS3Lib",
+        importOptions={"fileType": "json", "JSONType": "njson"},
+        casOut={"name": "test_table", "caslib": "casuser", "replace": True}
+    )
+    print("✅ File loaded successfully.")
+
+except Exception as e:
+    print(f"❌ Error loading single file: {e}")
+
+endsubmit;
+run;
