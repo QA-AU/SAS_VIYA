@@ -90,3 +90,23 @@ except Exception as e:
 
 endsubmit;
 run;
+
+
+
+////////
+/* Step 2: Load the NDJSON file using PROC CAS */
+proc cas;
+  table.loadTable result=r /
+    path="data/ndjson/sample_log_01"  /* 👈 your actual file name */
+    caslib="myS3Lib"
+    importOptions={
+      fileType="json"      /* force JSON parsing */
+      JSONType="njson"     /* NDJSON (one JSON per line) */
+    }
+    casOut={
+      name="sample_log_01"   /* output CAS table name */
+      caslib="casuser"
+      replace=True
+    };
+  print r;
+quit;
