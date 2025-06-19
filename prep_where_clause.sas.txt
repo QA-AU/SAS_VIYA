@@ -1,0 +1,32 @@
+%let pk = id,name,age;   /* or: %let pk = id; */
+%let where_clause = ;
+%let i = 1;
+%let key = %scan(&pk, &i, %str(,));
+
+%do %while(%length(&key) > 0);
+    %let key = %sysfunc(prxchange(s/^\s*(.*?)\s*$/\1/, 1, &key));
+    %put >>> Looping: key=&key;
+
+    proc sql noprint;
+        select &key into :val&i trimmed from work._sample_pk(obs=1);
+    quit;
+
+    %if &sqlrc ne 0 %then %do;
+        %put !!! SQL error for key=&key;
+        %return;
+    %end;
+
+    %put >>> Column value: key=&key val=&&val&i;
+
+    %if &i = 1 %then %do;
+        %let where_clause = &key="&&val&i";
+    %end;
+    %else %do;
+        %let where_clause = &where_clause and &key="&&val&i";
+    %end;
+
+    %let i = %eval(&i + 1);
+    %let key = %scan(&pk, &i, %str(,));
+%end;
+
+%put >>> Final WHERE clause: &where_clause;
