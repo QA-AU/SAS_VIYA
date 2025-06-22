@@ -1,11 +1,12 @@
 /****************************************************************************************
   Project    : Bulk S3 JSONL Loader to CAS
-  Version    : 1.0.1
+  Version    : 1.1.0
   Date       : 2025-06-22
   Authors    : Code Copilot (AI) with <Your Name>
   Description: 
     - Downloads JSON files from AWS S3 (add .jsonl extension)
     - Parses & combines all into a single wide table (nested as JSON string)
+    - Robust error handling for missing files, bad JSON, permission, and unknown issues
     - Uploads result to SAS Viya CAS
     - Parameters are grouped at the top for easy configuration
 ****************************************************************************************/
@@ -24,6 +25,7 @@ import os
 import pandas as pd
 import json
 import swat
+import traceback
 
 # --------- Variables from SAS macros ---------
 input_folder = r"&input_folder"
@@ -52,13 +54,22 @@ def read_multiline_jsonl(path):
                     try:
                         obj = json.loads(block)
                         records.append(obj)
-                    except Exception as e:
-                        print("SKIPPING record due to parse error:")
+                    except (json.JSONDecodeError, ValueError) as e:
+                        print("SKIPPING record due to JSON parse error:")
                         print(block)
                         print(f"Error: {e}\n---")
+                    except Exception as e:
+                        print("SKIPPING record due to unknown error:")
+                        print(block)
+                        print(traceback.format_exc())
                     buffer = []
     except FileNotFoundError:
         print(f"WARNING: File not found: {path} (skipping)")
+    except PermissionError:
+        print(f"WARNING: Permission denied when reading: {path} (skipping)")
+    except Exception as e:
+        print(f"ERROR: Failed to process file: {path}")
+        print(traceback.format_exc())
     return records
 
 def build_df(records):
@@ -84,9 +95,13 @@ for fname in os.listdir(input_folder):
     if fname.endswith(file_pattern):
         fpath = os.path.join(input_folder, fname)
         print(f"Parsing: {fpath}")
-        records = read_multiline_jsonl(fpath)
-        print(f"  {len(records)} records found.")
-        all_records.extend(records)
+        try:
+            records = read_multiline_jsonl(fpath)
+            print(f"  {len(records)} records found.")
+            all_records.extend(records)
+        except Exception as e:
+            print(f"UNEXPECTED ERROR while parsing file {fpath}: {e}")
+            print(traceback.format_exc())
 
 if all_records:
     df = build_df(all_records)
