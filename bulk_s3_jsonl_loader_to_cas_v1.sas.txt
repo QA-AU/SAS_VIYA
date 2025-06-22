@@ -1,0 +1,128 @@
+/****************************************************************************************
+  Project    : Bulk S3 JSONL Loader to CAS
+  Version    : 1.0.0
+  Date       : 2025-06-22
+  Authors    : <Qazi Azam>
+  Description: 
+    - Downloads JSON files (with or without extension) from AWS S3
+    - Adds .jsonl extension
+    - Parses & combines all into a single wide table (preserves nested as JSON string)
+    - Uploads result to SAS Viya CAS
+    - Parameters are grouped at the top for easy configuration
+    - S3 region and SAS authname supported
+
+  Usage Notes:
+    - List all S3 files using PROC S3 and download each to input_folder (with .jsonl extension)
+    - Flatten and upload all .jsonl files via PROC PYTHON
+    - All variable settings are in one section at the top
+
+****************************************************************************************/
+
+/* --- PARAMETERS: Set these for your job --- */
+%let s3_bucket = your-s3-bucket;
+%let s3_prefix = your/s3/folder/;         /* Folder in S3, end with / */
+%let s3_region = us-east-1;               /* <-- Add your S3 region here! */
+%let input_folder = /your/target/path/;   /* Local Viya path to save .jsonl files */
+%let authname = your_authname;            /* S3 credentials object in Viya */
+%let caslib = casuser;                    /* CASlib name */
+%let out_table = bulk_flat_table;         /* Output CAS table name */
+
+/* --------- 1. Download all S3 files with PROC S3 --------- */
+/* List objects in the S3 folder */
+proc s3;
+    list
+        "&s3_bucket"
+        prefix="&s3_prefix"
+        region="&s3_region"
+        auth="&authname";
+run;
+
+/* 
+Manually: For each file found, 
+add a PROC S3 download statement like below.
+Automate with a macro for many files!
+*/
+
+/*
+proc s3;
+    download
+        from="&s3_bucket/&s3_prefix/filename1"
+        to="&input_folder.filename1.jsonl"
+        region="&s3_region"
+        auth="&authname";
+run;
+*/
+
+/* --------- 2. Python: Flatten/Upload all local .jsonl files --------- */
+proc python;
+submit;
+import os
+import pandas as pd
+import json
+import swat
+
+# -------- Variables (same as SAS, for Python use) --------
+input_folder = r"&input_folder"
+file_pattern = ".jsonl"
+caslib = "&caslib"
+out_table = "&out_table"
+
+def read_multiline_jsonl(path):
+    records = []
+    buffer = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip().replace('“', '"').replace('”', '"')
+            if not line:
+                continue
+            buffer.append(line)
+            if line.endswith('}'):
+                block = "\n".join(buffer)
+                try:
+                    obj = json.loads(block)
+                    records.append(obj)
+                except Exception as e:
+                    print("SKIPPING record due to parse error:")
+                    print(block)
+                    print(f"Error: {e}\n---")
+                buffer = []
+    return records
+
+def build_df(records):
+    all_keys = set()
+    rows = []
+    for obj in records:
+        row = {}
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                row[k] = json.dumps(v, ensure_ascii=False)
+            else:
+                row[k] = v
+            all_keys.add(k)
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    for k in all_keys:
+        if k not in df.columns:
+            df[k] = ""
+    return df[list(sorted(all_keys))]
+
+all_records = []
+for fname in os.listdir(input_folder):
+    if fname.endswith(file_pattern):
+        fpath = os.path.join(input_folder, fname)
+        print(f"Parsing: {fpath}")
+        records = read_multiline_jsonl(fpath)
+        print(f"  {len(records)} records found.")
+        all_records.extend(records)
+
+df = build_df(all_records)
+print("Sample DataFrame:")
+print(df.head())
+
+conn = SAS.cas
+
+conn.upload_frame(df, casout={'caslib': caslib, 'name': out_table, 'replace': True})
+print(f"All files combined and uploaded to CAS as '{out_table}' in CASlib '{caslib}'.")
+
+endsubmit;
+run;
