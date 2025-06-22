@@ -1,57 +1,22 @@
 /****************************************************************************************
   Project    : Bulk S3 JSONL Loader to CAS
-  Version    : 1.0.0
+  Version    : 1.0.1
   Date       : 2025-06-22
-  Authors    : <Qazi Azam>
+  Authors    : Code Copilot (AI) with <Your Name>
   Description: 
-    - Downloads JSON files (with or without extension) from AWS S3
-    - Adds .jsonl extension
-    - Parses & combines all into a single wide table (preserves nested as JSON string)
+    - Downloads JSON files from AWS S3 (add .jsonl extension)
+    - Parses & combines all into a single wide table (nested as JSON string)
     - Uploads result to SAS Viya CAS
     - Parameters are grouped at the top for easy configuration
-    - S3 region and SAS authname supported
-
-  Usage Notes:
-    - List all S3 files using PROC S3 and download each to input_folder (with .jsonl extension)
-    - Flatten and upload all .jsonl files via PROC PYTHON
-    - All variable settings are in one section at the top
-
 ****************************************************************************************/
 
 /* --- PARAMETERS: Set these for your job --- */
-%let s3_bucket = your-s3-bucket;
-%let s3_prefix = your/s3/folder/;         /* Folder in S3, end with / */
-%let s3_region = us-east-1;               /* <-- Add your S3 region here! */
 %let input_folder = /your/target/path/;   /* Local Viya path to save .jsonl files */
-%let authname = your_authname;            /* S3 credentials object in Viya */
+%let file_pattern = .jsonl;               /* File extension */
 %let caslib = casuser;                    /* CASlib name */
 %let out_table = bulk_flat_table;         /* Output CAS table name */
 
-/* --------- 1. Download all S3 files with PROC S3 --------- */
-/* List objects in the S3 folder */
-proc s3;
-    list
-        "&s3_bucket"
-        prefix="&s3_prefix"
-        region="&s3_region"
-        auth="&authname";
-run;
-
-/* 
-Manually: For each file found, 
-add a PROC S3 download statement like below.
-Automate with a macro for many files!
-*/
-
-/*
-proc s3;
-    download
-        from="&s3_bucket/&s3_prefix/filename1"
-        to="&input_folder.filename1.jsonl"
-        region="&s3_region"
-        auth="&authname";
-run;
-*/
+/* (Place your PROC S3 downloads above here, if needed) */
 
 proc python;
 submit;
@@ -60,17 +25,17 @@ import pandas as pd
 import json
 import swat
 
-# -------- Variables (injected from SAS macros) --------
+# --------- Variables from SAS macros ---------
 input_folder = r"&input_folder"
-file_pattern = ".jsonl"
+file_pattern = "&file_pattern"
 caslib = "&caslib"
 out_table = "&out_table"
 
-print("PARAMETERS:")
-print(f"  input_folder = {input_folder}")
-print(f"  file_pattern = {file_pattern}")
-print(f"  caslib = {caslib}")
-print(f"  out_table = {out_table}")
+print("PYTHON RECEIVED PARAMETERS FROM SAS MACROS:")
+print(f"  input_folder = '{input_folder}'")
+print(f"  file_pattern = '{file_pattern}'")
+print(f"  caslib = '{caslib}'")
+print(f"  out_table = '{out_table}'")
 
 def read_multiline_jsonl(path):
     records = []
@@ -125,7 +90,7 @@ for fname in os.listdir(input_folder):
 
 if all_records:
     df = build_df(all_records)
-    print("Sample DataFrame:")
+    print("Sample DataFrame (first 5 rows):")
     print(df.head())
     conn = SAS.cas
     conn.upload_frame(df, casout={'caslib': caslib, 'name': out_table, 'replace': True})
