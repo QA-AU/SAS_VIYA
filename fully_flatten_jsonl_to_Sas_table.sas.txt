@@ -1,0 +1,192 @@
+/****************************************************************************************
+  Project    : S3 JSONL Deep-Flatten Loader to SAS Library (multi-file, robust)
+  Version    : V8
+  Date       : 2025-06-22
+  Authors    : Code Copilot (AI) with <Your Name>
+  Description: 
+    - Reads a specified list of JSONL files
+    - Deeply flattens all nested structures (dot notation for columns)
+    - Skips noise lines ({, }, [, ], etc) and recovers good records even from bad files
+    - Outputs as a SAS data set in a specified SAS library (not CAS)
+    - Prints a summary of records loaded, skipped, and errors found at the end
+    - All configuration variables are set in the Python block for one-stop editing
+****************************************************************************************/
+
+proc python;
+submit;
+import os
+import pandas as pd
+import json
+import traceback
+
+# ------------- CONFIGURATION: Set all variables here -------------
+input_files = [
+    "/your/target/path/file1.jsonl",
+    "/your/target/path/file2.jsonl",
+    # Add more files as needed
+]
+saslib = "mylib"                        # Output SAS library
+out_table = "bulk_flat_table"           # Output SAS table name
+
+print("PYTHON CONFIGURATION PARAMETERS:")
+print(f"  input_files = {input_files}")
+print(f"  saslib = '{saslib}'")
+print(f"  out_table = '{out_table}'")
+
+file_summary = []
+total_files = 0
+total_records = 0
+total_skipped = 0
+files_with_errors = []
+
+def read_jsonl_as_json_array(path):
+    """Read a JSONL or multi-object file as a single JSON array, skipping noise lines.
+       If array fails to parse, attempt to parse records one by one and recover good ones.
+       Returns: records, skipped_count, error_found
+    """
+    json_blocks = []
+    skipped_count = 0
+    error_found = False
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            buffer = []
+            for line in f:
+                cleaned = line.strip().replace('“', '"').replace('”', '"')
+                # Skip noise lines: brackets, commas, or empty
+                if cleaned in {'{', '}', '[', ']', '{,', '},', '[,', '],', ',', ''}:
+                    continue
+                buffer.append(cleaned)
+                if cleaned.endswith('}'):
+                    block = "\n".join(buffer)
+                    if block.strip() not in ('{', '}', '{,', '},', '[', ']', '[,', '],'):
+                        json_blocks.append(block)
+                    buffer = []
+        # Build one big JSON array
+        as_json = "[\n" + ",\n".join(json_blocks) + "\n]"
+        try:
+            records = json.loads(as_json)
+            return records, skipped_count, error_found
+        except (json.JSONDecodeError, ValueError) as e:
+            print("ERROR: Could not parse concatenated JSON array in", path)
+            print(e)
+            error_found = True
+            print("Attempting to recover by parsing blocks one by one...")
+            # Try to parse one by one; continue with valid ones
+            recovered = []
+            for i, block in enumerate(json_blocks):
+                try:
+                    recovered.append(json.loads(block))
+                except (json.JSONDecodeError, ValueError) as single_e:
+                    print(f"SKIPPING record {i+1} in {os.path.basename(path)} due to JSON parse error:")
+                    print(block)
+                    print(f"Error: {single_e}\n---")
+                    skipped_count += 1
+                except Exception as single_e:
+                    print(f"SKIPPING record {i+1} in {os.path.basename(path)} due to unknown error:")
+                    print(block)
+                    print(traceback.format_exc())
+                    skipped_count += 1
+            print(f"Recovered {len(recovered)} out of {len(json_blocks)} records from {os.path.basename(path)}.")
+            return recovered, skipped_count, error_found
+        except Exception as e:
+            print("UNHANDLED ERROR while parsing JSON array in", path)
+            print(as_json)
+            print(traceback.format_exc())
+            error_found = True
+            return [], len(json_blocks), error_found
+    except FileNotFoundError:
+        print(f"WARNING: File not found: {path} (skipping)")
+        error_found = True
+        return [], 0, error_found
+    except PermissionError:
+        print(f"WARNING: Permission denied when reading: {path} (skipping)")
+        error_found = True
+        return [], 0, error_found
+    except Exception as e:
+        print(f"ERROR: Failed to process file: {path}")
+        print(traceback.format_exc())
+        error_found = True
+        return [], 0, error_found
+
+def build_df(records):
+    """Deep-flatten nested structures for all records using pandas.json_normalize."""
+    try:
+        df = pd.json_normalize(records)
+        return df
+    except Exception as e:
+        print("Error flattening JSON records:", e)
+        # Fallback to original approach:
+        all_keys = set()
+        rows = []
+        for obj in records:
+            row = {}
+            for k, v in obj.items():
+                if isinstance(v, (dict, list)):
+                    row[k] = json.dumps(v, ensure_ascii=False)
+                else:
+                    row[k] = v
+                all_keys.add(k)
+            rows.append(row)
+        df = pd.DataFrame(rows)
+        for k in all_keys:
+            if k not in df.columns:
+                df[k] = ""
+        return df[list(sorted(all_keys))]
+
+try:
+    all_records = []
+    for input_file in input_files:
+        total_files += 1
+        print(f"Parsing: {input_file}")
+        try:
+            records, skipped, error_found = read_jsonl_as_json_array(input_file)
+            loaded = len(records)
+            total_records += loaded
+            total_skipped += skipped
+            file_summary.append((os.path.basename(input_file), loaded, skipped, error_found))
+            if error_found:
+                files_with_errors.append(input_file)
+            print(f"  {loaded} records loaded, {skipped} records skipped from {input_file}.")
+            all_records.extend(records)
+        except Exception as e:
+            print(f"UNEXPECTED ERROR while parsing file {input_file}: {e}")
+            print(traceback.format_exc())
+            files_with_errors.append(input_file)
+
+    if all_records:
+        df = build_df(all_records)
+        print("Sample DataFrame (first 5 rows):")
+        print(df.head())
+
+        # --- Save DataFrame as SAS data set (in mylib) ---
+        try:
+            SAS.df2sd(df, f"{saslib}.{out_table}", replace=True)
+            print(f"All files combined and saved as SAS table {saslib}.{out_table}.")
+        except Exception as e:
+            print(f"ERROR while saving DataFrame as SAS table:")
+            print(traceback.format_exc())
+    else:
+        print("No records parsed. Nothing to upload.")
+
+    # --- Summary report ---
+    print("\n========== SUMMARY REPORT ==========")
+    print(f"Files processed: {total_files}")
+    print(f"Total records loaded: {total_records}")
+    print(f"Total records skipped (invalid): {total_skipped}")
+    if files_with_errors:
+        print("Files with errors:")
+        for fname in files_with_errors:
+            print(f"  - {fname}")
+    else:
+        print("No file-level errors found.")
+    print("Per-file detail:")
+    for fname, loaded, skipped, error in file_summary:
+        print(f"  {fname}: loaded={loaded}, skipped={skipped}, error={'yes' if error else 'no'}")
+    print("=====================================\n")
+
+except Exception as bigerr:
+    print("UNHANDLED PYTHON EXCEPTION in main code:")
+    print(traceback.format_exc())
+
+endsubmit;
+run;
