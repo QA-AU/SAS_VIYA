@@ -53,7 +53,6 @@ proc s3;
 run;
 */
 
-/* --------- 2. Python: Flatten/Upload all local .jsonl files --------- */
 proc python;
 submit;
 import os
@@ -61,31 +60,40 @@ import pandas as pd
 import json
 import swat
 
-# -------- Variables (same as SAS, for Python use) --------
+# -------- Variables (injected from SAS macros) --------
 input_folder = r"&input_folder"
 file_pattern = ".jsonl"
 caslib = "&caslib"
 out_table = "&out_table"
 
+print("PARAMETERS:")
+print(f"  input_folder = {input_folder}")
+print(f"  file_pattern = {file_pattern}")
+print(f"  caslib = {caslib}")
+print(f"  out_table = {out_table}")
+
 def read_multiline_jsonl(path):
     records = []
     buffer = []
-    with open(path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip().replace('“', '"').replace('”', '"')
-            if not line:
-                continue
-            buffer.append(line)
-            if line.endswith('}'):
-                block = "\n".join(buffer)
-                try:
-                    obj = json.loads(block)
-                    records.append(obj)
-                except Exception as e:
-                    print("SKIPPING record due to parse error:")
-                    print(block)
-                    print(f"Error: {e}\n---")
-                buffer = []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip().replace('“', '"').replace('”', '"')
+                if not line:
+                    continue
+                buffer.append(line)
+                if line.endswith('}'):
+                    block = "\n".join(buffer)
+                    try:
+                        obj = json.loads(block)
+                        records.append(obj)
+                    except Exception as e:
+                        print("SKIPPING record due to parse error:")
+                        print(block)
+                        print(f"Error: {e}\n---")
+                    buffer = []
+    except FileNotFoundError:
+        print(f"WARNING: File not found: {path} (skipping)")
     return records
 
 def build_df(records):
@@ -115,14 +123,15 @@ for fname in os.listdir(input_folder):
         print(f"  {len(records)} records found.")
         all_records.extend(records)
 
-df = build_df(all_records)
-print("Sample DataFrame:")
-print(df.head())
-
-conn = SAS.cas
-
-conn.upload_frame(df, casout={'caslib': caslib, 'name': out_table, 'replace': True})
-print(f"All files combined and uploaded to CAS as '{out_table}' in CASlib '{caslib}'.")
+if all_records:
+    df = build_df(all_records)
+    print("Sample DataFrame:")
+    print(df.head())
+    conn = SAS.cas
+    conn.upload_frame(df, casout={'caslib': caslib, 'name': out_table, 'replace': True})
+    print(f"All files combined and uploaded to CAS as '{out_table}' in CASlib '{caslib}'.")
+else:
+    print("No records parsed. Nothing to upload.")
 
 endsubmit;
 run;
