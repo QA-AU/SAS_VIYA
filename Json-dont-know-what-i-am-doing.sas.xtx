@@ -1,0 +1,177 @@
+/****************************************************************************************
+  Project    : S3 JSONL Batch Loader (One SAS Table Per File, With Log, Level-1 Flatten, Double-Parse for Parquet)
+  Version    : V11
+  Date       : 2025-06-22
+  Authors    : Code Copilot (AI) with <Your Name>
+  Description: 
+    - Reads a list of JSONL files (handles Parquet "one column" style: line is stringified JSON or object)
+    - Flattens nested JSON to level 1 using pandas.json_normalize (max_level=1)
+    - Cleans empty strings to null (pandas NA)
+    - Writes each file as a unique SAS table (in mylib, with random suffix)
+    - Logs all created tables and summarizes at end
+    - Per-file memory cleanup
+****************************************************************************************/
+
+proc python;
+submit;
+import os
+import pandas as pd
+import json
+import traceback
+import random
+
+# ------------- CONFIGURATION: Set all variables here -------------
+input_files = [
+    "/your/target/path/file1.jsonl",
+    "/your/target/path/file2.jsonl",
+    # Add more files as needed
+]
+saslib = "mylib"  # Output SAS library
+
+def build_table_name(filename):
+    name, _ = os.path.splitext(os.path.basename(filename))
+    import re
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    suffix = str(random.randint(10000, 99999))
+    full = f"{safe}_{suffix}"
+    return full[:32]  # SAS table names max 32 chars
+
+def read_jsonl_as_json_array(path):
+    records = []
+    skipped_count = 0
+    error_found = False
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                cleaned = line.strip().replace('“', '"').replace('”', '"')
+                if cleaned in {'', '{', '}', '[', ']', '{,', '},', '[,', '],', ','}:
+                    continue
+                try:
+                    val = json.loads(cleaned)
+                    if isinstance(val, dict):
+                        records.append(val)
+                    elif isinstance(val, str):
+                        # String that is itself JSON: parse again
+                        try:
+                            records.append(json.loads(val))
+                        except Exception as e2:
+                            skipped_count += 1
+                            print(f"Skipping double-bad line: {cleaned}\n  Error: {e2}")
+                    else:
+                        skipped_count += 1
+                except Exception as e:
+                    skipped_count += 1
+                    print(f"Skipping bad line: {cleaned}\n  Error: {e}")
+        return records, skipped_count, error_found
+    except Exception as e:
+        print(f"ERROR opening file: {path}\n  {e}")
+        error_found = True
+        return [], 0, error_found
+
+def build_df(records):
+    try:
+        df = pd.json_normalize(records, max_level=1)  # Only flatten level 1
+        return df
+    except Exception as e:
+        print("Error flattening JSON records:", e)
+        all_keys = set()
+        rows = []
+        for obj in records:
+            row = {}
+            for k, v in obj.items():
+                if isinstance(v, (dict, list)):
+                    row[k] = json.dumps(v, ensure_ascii=False)
+                else:
+                    row[k] = v
+                all_keys.add(k)
+            rows.append(row)
+        df = pd.DataFrame(rows)
+        for k in all_keys:
+            if k not in df.columns:
+                df[k] = ""
+        return df[list(sorted(all_keys))]
+
+table_log = []
+total_files = 0
+total_records = 0
+total_skipped = 0
+
+try:
+    for input_file in input_files:
+        out_table = build_table_name(input_file)
+        print(f"\nProcessing file {input_file} into table {saslib}.{out_table}")
+        records, skipped, error_found = read_jsonl_as_json_array(input_file)
+        loaded = len(records)
+        print(f"  {loaded} records loaded, {skipped} records skipped from {input_file}.")
+        if loaded:
+            df = build_df(records)
+
+            # Treat all empty strings as nulls
+            df.replace("", pd.NA, inplace=True)
+
+            # Clean column names for SAS: max 32 chars, only alphanum and _
+            def clean_sas_column(col):
+                import re
+                col = re.sub(r"[^A-Za-z0-9_]", "_", col)
+                return col[:32]
+            df.columns = [clean_sas_column(col) for col in df.columns]
+
+            try:
+                SAS.df2sd(df, f"{saslib}.{out_table}", replace=True)
+                print(f"File {input_file} saved as SAS table {saslib}.{out_table}.")
+                table_log.append({
+                    "file": input_file,
+                    "table": f"{saslib}.{out_table}",
+                    "records": loaded,
+                    "skipped": skipped,
+                    "error": error_found
+                })
+                total_records += loaded
+                total_skipped += skipped
+            except Exception as e:
+                print(f"ERROR while saving {saslib}.{out_table}:")
+                print(traceback.format_exc())
+                table_log.append({
+                    "file": input_file,
+                    "table": f"{saslib}.{out_table}",
+                    "records": loaded,
+                    "skipped": skipped,
+                    "error": True
+                })
+        else:
+            print(f"No records found in {input_file}, no table created.")
+            table_log.append({
+                "file": input_file,
+                "table": f"{saslib}.{out_table}",
+                "records": 0,
+                "skipped": skipped,
+                "error": True
+            })
+        total_files += 1
+
+        # --- Memory cleanup for this iteration (no explicit gc.collect) ---
+        try:
+            del records
+        except Exception:
+            pass
+        try:
+            del df
+        except Exception:
+            pass
+
+    # --- Summary report ---
+    print("\n========== SUMMARY REPORT ==========")
+    print(f"Files processed: {total_files}")
+    print(f"Total records loaded: {total_records}")
+    print(f"Total records skipped (invalid): {total_skipped}")
+    print("Created SAS tables:")
+    for entry in table_log:
+        print(f"  {entry['table']} (from {entry['file']}): loaded={entry['records']}, skipped={entry['skipped']}, error={'yes' if entry['error'] else 'no'}")
+    print("=====================================\n")
+
+except Exception as bigerr:
+    print("UNHANDLED PYTHON EXCEPTION in main code:")
+    print(traceback.format_exc())
+
+endsubmit;
+run;
