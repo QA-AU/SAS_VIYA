@@ -1,0 +1,101 @@
+/****************************************************************************************
+  Project    : Clean column-JSON to NDJSON and load to SAS
+  Version    : 1.0
+  Date       : 2025-06-22
+  Author     : Code Copilot (AI)
+  Description: 
+    - Reads a raw JSON column file (with or without extension)
+    - Converts to NDJSON (newline-delimited valid JSON)
+    - Flattens (level 1) and loads to SAS
+    - Prints progress and summary
+****************************************************************************************/
+
+proc python;
+submit;
+import os
+import pandas as pd
+import json
+import traceback
+import re
+
+# --- PARAMETERS: Set these as needed ---
+input_file = "/your/user/folder/your_column_json_file"   # Your file (no extension needed)
+ndjson_file = "/your/user/folder/temp_output.ndjson"     # Intermediate NDJSON file
+saslib = "mylib"                                         # Output SAS library
+out_table = "my_json_table"                              # Output SAS table name
+
+def is_json_object(line):
+    """Quick check if a string looks like a JSON object."""
+    l = line.strip()
+    return l.startswith("{") and l.endswith("}")
+
+print(f"Reading and cleaning: {input_file}")
+
+try:
+    ndjson_records = []
+    buffer = []
+    with open(input_file, 'r', encoding='utf-8') as fin:
+        for line in fin:
+            l = line.strip()
+            if not l or l in {",", "{", "}", "[", "]"}:
+                continue
+            # Handle trailing comma in last property, if any
+            l = l.rstrip(",")
+            buffer.append(l)
+            # End of an object (if line ends with '}')
+            if l.endswith("}"):
+                joined = " ".join(buffer)
+                # Try to ensure a valid JSON object
+                try:
+                    obj = json.loads(joined)
+                    ndjson_records.append(obj)
+                except Exception:
+                    # Could not parse, skip or log
+                    print(f"Skipped invalid JSON object:\n{joined}")
+                buffer = []
+    # Write valid NDJSON to file (optional, for audit)
+    with open(ndjson_file, 'w', encoding='utf-8') as fout:
+        for obj in ndjson_records:
+            fout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    print(f"Cleaned NDJSON records: {len(ndjson_records)} written to {ndjson_file}")
+
+    # --- Load and flatten NDJSON ---
+    records = []
+    with open(ndjson_file, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f, 1):
+            l = line.strip()
+            if not l:
+                continue
+            try:
+                obj = json.loads(l)
+                records.append(obj)
+                if i % 1000 == 0:
+                    print(f"  Parsed {i} NDJSON records...")
+            except Exception as e:
+                print(f"Skipping bad NDJSON line {i}: {l[:80]}\n  Error: {e}")
+
+    if not records:
+        raise Exception("No valid NDJSON records found.")
+
+    print(f"Flattening {len(records)} NDJSON records (level 1)...")
+    df = pd.json_normalize(records, max_level=1)
+
+    # Clean column names for SAS: max 32 chars, only alphanum and _
+    def clean_sas_column(col):
+        col = re.sub(r"[^A-Za-z0-9_]", "_", col)
+        return col[:32]
+    df.columns = [clean_sas_column(col) for col in df.columns]
+
+    print("Sample DataFrame (first 5 rows):")
+    print(df.head())
+
+    print(f"Saving DataFrame to SAS table: {saslib}.{out_table} ...")
+    SAS.df2sd(df, f"{saslib}.{out_table}", replace=True)
+    print(f"SUCCESS: Data loaded to SAS table: {saslib}.{out_table}")
+
+except Exception as e:
+    print("ERROR processing file to NDJSON/SAS:")
+    print(traceback.format_exc())
+
+endsubmit;
+run;
