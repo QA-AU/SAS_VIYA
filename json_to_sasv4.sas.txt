@@ -1,13 +1,13 @@
 /****************************************************************************************
-  Project    : Batch Load JSONL files from folder (level-1 flatten)
+  Project    : Universal Batch JSON/JSONL Loader (level-1 flatten, all file types)
   Version    : 1.0
   Date       : 2025-06-22
   Author     : Code Copilot (AI)
   Description: 
-    - Reads all JSONL files in a folder (any extension or no extension)
-    - Flattens each at level 1; nested lists/dicts kept intact as strings
-    - Each file to its own SAS table (unique name)
-    - Running commentary and summary report
+    - Reads all files in a folder (JSONL, pretty JSON, stringified JSON, with/without extension)
+    - Flattens each at level 1; nested lists/dicts kept as cell value
+    - Each file → its own SAS table (unique name)
+    - Progress & summary reporting
 ****************************************************************************************/
 
 proc python;
@@ -19,12 +19,12 @@ import traceback
 import re
 import random
 
-# --- CONFIG ---
+# --- CONFIGURATION: Set these for your job ---
 folder = "/your/user/folder"          # Change to your folder path
 saslib = "mylib"                      # Output SAS library
 table_prefix = "jsonl_"               # SAS table prefix
 
-# Get all files (not directories, not hidden/system)
+# --- Gather all files (not directories, not hidden) ---
 input_files = [
     os.path.join(folder, f)
     for f in os.listdir(folder)
@@ -39,21 +39,45 @@ def build_table_name(filename):
     suffix = str(random.randint(10000, 99999))
     return f"{table_prefix}{safe}_{suffix}"[:32]
 
-def process_jsonl_file(input_file, table_name):
+def process_json_file(input_file, table_name):
     print(f"\nProcessing: {input_file}")
     records = []
-    with open(input_file, 'r', encoding='utf-8') as f:
-        for i, line in enumerate(f, 1):
-            l = line.strip()
-            if not l:
-                continue
+
+    # Try whole-file parse first (object or array)
+    try:
+        with open(input_file, 'r', encoding='utf-8') as f:
+            raw = f.read().strip()
+        if raw:
             try:
-                obj = json.loads(l)
-                records.append(obj)
-                if i % 1000 == 0:
-                    print(f"  Parsed {i} lines...")
-            except Exception as e:
-                print(f"  Skipping bad line {i}: {l[:80]} Error: {e}")
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    records = [parsed]
+                    print("  Whole-file JSON object parsed.")
+                elif isinstance(parsed, list):
+                    records = parsed
+                    print(f"  Whole-file JSON array parsed: {len(records)} records.")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # If whole-file parse didn't work, try JSONL (one object per line)
+    if not records:
+        with open(input_file, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f, 1):
+                l = line.strip()
+                if not l:
+                    continue
+                try:
+                    obj = json.loads(l)
+                    if isinstance(obj, str):
+                        # Stringified JSON (parquet-style column), double-parse
+                        obj = json.loads(obj)
+                    records.append(obj)
+                    if i % 1000 == 0:
+                        print(f"  Parsed {i} lines...")
+                except Exception as e:
+                    print(f"  Skipping bad line {i}: {l[:80]} Error: {e}")
     if not records:
         print(f"  No valid records found in file: {input_file}")
         return 0, 0, False
@@ -80,7 +104,7 @@ def process_jsonl_file(input_file, table_name):
 summary = []
 for file in input_files:
     table_name = build_table_name(file)
-    n_parsed, n_skipped, success = process_jsonl_file(file, table_name)
+    n_parsed, n_skipped, success = process_json_file(file, table_name)
     summary.append({
         "file": file,
         "table": table_name,
