@@ -1,0 +1,70 @@
+proc python;
+submit;
+import os
+import pandas as pd
+import json
+import traceback
+
+# --- PARAMETERS: Set these as needed ---
+input_file = "/your/user/folder/your_json_file"   # Full path, no extension required
+saslib = "mylib"                                  # Output SAS library
+out_table = "my_json_table"                       # Output SAS table name
+
+print(f"Reading file: {input_file}")
+
+try:
+    # --- Read JSONL file: each line is a JSON object ---
+    records = []
+    row_count = 0
+    skipped = 0
+    print("Starting to read and parse lines...")
+
+    with open(input_file, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                skipped += 1
+                if skipped % 100 == 0:
+                    print(f"Skipped {skipped} empty/blank lines so far...")
+                continue
+            try:
+                obj = json.loads(line)
+                records.append(obj)
+                row_count += 1
+                if row_count % 1000 == 0:
+                    print(f"Parsed {row_count} records so far...")
+            except Exception as e:
+                skipped += 1
+                print(f"Skipping bad line {i}: {line}\n  Error: {e}")
+
+    print(f"Done reading file. Total parsed: {row_count}, total skipped: {skipped}")
+
+    if not records:
+        raise Exception("No valid JSON records found in file.")
+
+    # Flatten only to level 1
+    print("Flattening data to level 1...")
+    df = pd.json_normalize(records, max_level=1)
+
+    # Clean column names for SAS: max 32 chars, only alphanum and _
+    def clean_sas_column(col):
+        import re
+        col = re.sub(r"[^A-Za-z0-9_]", "_", col)
+        return col[:32]
+    df.columns = [clean_sas_column(col) for col in df.columns]
+
+    print("Sample DataFrame (first 5 rows):")
+    print(df.head())
+
+    # Save to SAS table
+    print(f"Saving DataFrame to SAS table: {saslib}.{out_table} ...")
+    SAS.df2sd(df, f"{saslib}.{out_table}", replace=True)
+    print(f"Data loaded to SAS table: {saslib}.{out_table}")
+
+except Exception as e:
+    print("ERROR loading JSON file to SAS table:")
+    print(traceback.format_exc())
+
+endsubmit;
+run;
+

@@ -1,0 +1,153 @@
+/****************************************************************************************
+  Project    : Batch Load JSON/JSONL files (with/without extension) from folder to SAS
+  Version    : 1.0
+  Date       : 2025-06-22
+  Author     : Code Copilot (AI)
+  Description: 
+    - Reads all files in a folder (JSON or JSONL, any extension or no extension)
+    - Each file loaded to separate SAS table (unique table name)
+    - Handles standard JSON, JSONL, and "one-column" stringified JSON
+    - Level-1 flatten, commentary and summary reporting
+****************************************************************************************/
+
+proc python;
+submit;
+import os
+import pandas as pd
+import json
+import traceback
+import random
+
+# ------------- CONFIGURATION: Set all variables here -------------
+folder = "/your/user/folder/"       # Change to your SAS user folder
+saslib = "mylib"                    # Output SAS library
+table_prefix = "my_json_"           # Prefix for output SAS tables
+
+# Gather all files (exclude hidden/system files)
+input_files = [
+    os.path.join(folder, f)
+    for f in os.listdir(folder)
+    if os.path.isfile(os.path.join(folder, f)) and not f.startswith('.')
+]
+
+print(f"Discovered {len(input_files)} files in folder {folder}")
+
+def build_table_name(filename):
+    name, _ = os.path.splitext(os.path.basename(filename))
+    import re
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    suffix = str(random.randint(10000, 99999))
+    full = f"{table_prefix}{safe}_{suffix}"
+    return full[:32]  # SAS table names max 32 chars
+
+def try_parse_json(text):
+    """Try to parse JSON, handle dict, list, or stringified JSON."""
+    try:
+        val = json.loads(text)
+        if isinstance(val, (dict, list)):
+            return val
+        if isinstance(val, str):
+            # Might be stringified JSON
+            return json.loads(val)
+        return None
+    except Exception:
+        return None
+
+def process_file(input_file, out_table):
+    print(f"\n--- Processing file: {input_file} ---")
+    records = []
+    parsed, skipped = 0, 0
+    max_preview = 5
+    previewed = 0
+    # Try as regular JSON (single object/array) first
+    try:
+        with open(input_file, 'r', encoding='utf-8') as f:
+            raw = f.read().strip()
+        # If starts with { or [, try to parse as a whole
+        if raw.startswith('{') or raw.startswith('['):
+            top = try_parse_json(raw)
+            if isinstance(top, dict):
+                records = [top]
+                parsed = 1
+            elif isinstance(top, list):
+                records = top
+                parsed = len(top)
+            else:
+                # Not parseable as object/array, fall back to line by line
+                raise ValueError("Top-level JSON is not dict/list.")
+        else:
+            raise ValueError("Does not look like standard JSON.")
+    except Exception:
+        # Fallback: try line-by-line (JSONL)
+        print(f"  [Info] Could not parse as standard JSON, attempting JSONL (one record per line) ...")
+        with open(input_file, 'r', encoding='utf-8') as f:
+            for i, line in enumerate(f, 1):
+                l = line.strip()
+                if not l:
+                    skipped += 1
+                    if skipped % 100 == 0:
+                        print(f"  Skipped {skipped} empty/blank lines so far...")
+                    continue
+                rec = try_parse_json(l)
+                if rec is not None:
+                    records.append(rec)
+                    parsed += 1
+                    if parsed % 1000 == 0:
+                        print(f"  Parsed {parsed} records so far...")
+                else:
+                    skipped += 1
+                    print(f"  Skipping bad line {i}: {l[:80]}")
+    print(f"  Done reading. Parsed: {parsed}, Skipped: {skipped}")
+    if not records:
+        print(f"  No valid records found in file: {input_file}")
+        return parsed, skipped, False
+
+    # Level-1 flatten
+    print(f"  Flattening {len(records)} records to level 1 ...")
+    try:
+        df = pd.json_normalize(records, max_level=1)
+        df.replace("", pd.NA, inplace=True)  # treat empty strings as null
+        def clean_sas_column(col):
+            import re
+            col = re.sub(r"[^A-Za-z0-9_]", "_", col)
+            return col[:32]
+        df.columns = [clean_sas_column(col) for col in df.columns]
+
+        print("  Sample DataFrame (first 5 rows):")
+        print(df.head())
+        print(f"  Saving DataFrame to SAS table: {saslib}.{out_table} ...")
+        SAS.df2sd(df, f"{saslib}.{out_table}", replace=True)
+        print(f"  SUCCESS: Data loaded to SAS table: {saslib}.{out_table}")
+        return parsed, skipped, True
+    except Exception as e:
+        print(f"  ERROR flattening or saving file: {input_file}")
+        print(traceback.format_exc())
+        return parsed, skipped, False
+
+# --- Main loop ---
+summary = []
+file_count = 0
+for file in input_files:
+    table_name = build_table_name(file)
+    parsed, skipped, success = process_file(file, table_name)
+    summary.append({
+        "file": file,
+        "table": table_name,
+        "parsed": parsed,
+        "skipped": skipped,
+        "success": success
+    })
+    file_count += 1
+
+# --- Summary report ---
+print("\n========== SUMMARY REPORT ==========")
+print(f"Total files processed: {file_count}")
+success_ct = sum(1 for s in summary if s['success'])
+print(f"Files loaded successfully: {success_ct}")
+for s in summary:
+    status = "OK" if s['success'] else "ERROR"
+    print(f"  {status}: {s['file']} → {saslib}.{s['table']} | Parsed: {s['parsed']} | Skipped: {s['skipped']}")
+print("=====================================\n")
+
+endsubmit;
+run;
