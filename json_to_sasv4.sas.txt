@@ -1,8 +1,14 @@
 /****************************************************************************************
-  Project    : Universal Batch JSON Loader (Auto-detect JSON vs JSONL, level-1 flatten)
-  Version    : 1.1
+  Project    : Universal Batch JSON/JSONL Loader (handles trailing commas, auto-detects format)
+  Version    : 1.2
   Date       : 2025-06-22
   Author     : Code Copilot (AI)
+  Description: 
+    - Reads all files in a folder (pretty JSON, JSONL, with/without extension)
+    - Removes trailing commas for strict JSON parsing
+    - Flattens at level 1; nested structures kept as cell value
+    - Each file → own SAS table (unique name)
+    - Progress & summary reporting
 ****************************************************************************************/
 
 proc python;
@@ -36,6 +42,8 @@ def load_json_whole_file(input_file):
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
             txt = f.read()
+        # Remove any trailing commas before closing } or ]
+        txt = re.sub(r',(\s*[}\]])', r'\1', txt)
         data = json.loads(txt)
         if isinstance(data, dict):
             return [data]
