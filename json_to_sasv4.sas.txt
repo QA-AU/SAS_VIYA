@@ -1,0 +1,101 @@
+/****************************************************************************************
+  Project    : Batch Load JSONL files from folder (level-1 flatten)
+  Version    : 1.0
+  Date       : 2025-06-22
+  Author     : Code Copilot (AI)
+  Description: 
+    - Reads all JSONL files in a folder (any extension or no extension)
+    - Flattens each at level 1; nested lists/dicts kept intact as strings
+    - Each file to its own SAS table (unique name)
+    - Running commentary and summary report
+****************************************************************************************/
+
+proc python;
+submit;
+import os
+import pandas as pd
+import json
+import traceback
+import re
+import random
+
+# --- CONFIG ---
+folder = "/your/user/folder"          # Change to your folder path
+saslib = "mylib"                      # Output SAS library
+table_prefix = "jsonl_"               # SAS table prefix
+
+# Get all files (not directories, not hidden/system)
+input_files = [
+    os.path.join(folder, f)
+    for f in os.listdir(folder)
+    if os.path.isfile(os.path.join(folder, f)) and not f.startswith('.')
+]
+
+print(f"Found {len(input_files)} files in folder {folder}")
+
+def build_table_name(filename):
+    name, _ = os.path.splitext(os.path.basename(filename))
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", name)
+    suffix = str(random.randint(10000, 99999))
+    return f"{table_prefix}{safe}_{suffix}"[:32]
+
+def process_jsonl_file(input_file, table_name):
+    print(f"\nProcessing: {input_file}")
+    records = []
+    with open(input_file, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f, 1):
+            l = line.strip()
+            if not l:
+                continue
+            try:
+                obj = json.loads(l)
+                records.append(obj)
+                if i % 1000 == 0:
+                    print(f"  Parsed {i} lines...")
+            except Exception as e:
+                print(f"  Skipping bad line {i}: {l[:80]} Error: {e}")
+    if not records:
+        print(f"  No valid records found in file: {input_file}")
+        return 0, 0, False
+
+    print(f"  Flattening {len(records)} records (level 1 only)...")
+    try:
+        df = pd.json_normalize(records, max_level=1)
+        # Clean column names for SAS
+        def clean_sas_column(col):
+            return re.sub(r"[^A-Za-z0-9_]", "_", col)[:32]
+        df.columns = [clean_sas_column(col) for col in df.columns]
+        print(f"  DataFrame shape: {df.shape}")
+        print(f"  First 5 rows:\n{df.head()}")
+        print(f"  Saving to SAS table {saslib}.{table_name}")
+        SAS.df2sd(df, f"{saslib}.{table_name}", replace=True)
+        print(f"  SUCCESS: {saslib}.{table_name} created.")
+        return len(records), 0, True
+    except Exception as e:
+        print(f"  ERROR flattening or saving {input_file}:")
+        print(traceback.format_exc())
+        return len(records), 1, False
+
+# --- Main loop ---
+summary = []
+for file in input_files:
+    table_name = build_table_name(file)
+    n_parsed, n_skipped, success = process_jsonl_file(file, table_name)
+    summary.append({
+        "file": file,
+        "table": table_name,
+        "parsed": n_parsed,
+        "skipped": n_skipped,
+        "success": success
+    })
+
+# --- Summary report ---
+print("\n========== SUMMARY REPORT ==========")
+print(f"Files processed: {len(summary)}")
+for s in summary:
+    status = "OK" if s['success'] else "ERROR"
+    print(f"  {status}: {s['file']} → {saslib}.{s['table']} | Parsed: {s['parsed']} | Skipped: {s['skipped']}")
+print("=====================================\n")
+
+endsubmit;
+run;
