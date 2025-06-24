@@ -1,13 +1,8 @@
 /****************************************************************************************
-  Project    : Universal Batch JSON/JSONL Loader (level-1 flatten, all file types)
-  Version    : 1.0
+  Project    : Universal Batch JSON Loader (Auto-detect JSON vs JSONL, level-1 flatten)
+  Version    : 1.1
   Date       : 2025-06-22
   Author     : Code Copilot (AI)
-  Description: 
-    - Reads all files in a folder (JSONL, pretty JSON, stringified JSON, with/without extension)
-    - Flattens each at level 1; nested lists/dicts kept as cell value
-    - Each file → its own SAS table (unique name)
-    - Progress & summary reporting
 ****************************************************************************************/
 
 proc python;
@@ -19,19 +14,17 @@ import traceback
 import re
 import random
 
-# --- CONFIGURATION: Set these for your job ---
-folder = "/your/user/folder"          # Change to your folder path
-saslib = "mylib"                      # Output SAS library
-table_prefix = "jsonl_"               # SAS table prefix
+folder = "/sasdata/cdof/pace/internal/QA"   # <-- Change to your folder
+saslib = "mylib"
+table_prefix = "json_"
 
-# --- Gather all files (not directories, not hidden) ---
 input_files = [
     os.path.join(folder, f)
     for f in os.listdir(folder)
     if os.path.isfile(os.path.join(folder, f)) and not f.startswith('.')
 ]
 
-print(f"Found {len(input_files)} files in folder {folder}")
+print(f"Found {len(input_files)} files in {folder}")
 
 def build_table_name(filename):
     name, _ = os.path.splitext(os.path.basename(filename))
@@ -39,48 +32,57 @@ def build_table_name(filename):
     suffix = str(random.randint(10000, 99999))
     return f"{table_prefix}{safe}_{suffix}"[:32]
 
-def process_json_file(input_file, table_name):
-    print(f"\nProcessing: {input_file}")
-    records = []
-
-    # Try whole-file parse first (object or array)
+def load_json_whole_file(input_file):
     try:
         with open(input_file, 'r', encoding='utf-8') as f:
-            raw = f.read().strip()
-        if raw:
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    records = [parsed]
-                    print("  Whole-file JSON object parsed.")
-                elif isinstance(parsed, list):
-                    records = parsed
-                    print(f"  Whole-file JSON array parsed: {len(records)} records.")
-            except Exception:
-                pass
-    except Exception:
-        pass
+            txt = f.read()
+        data = json.loads(txt)
+        if isinstance(data, dict):
+            return [data]
+        elif isinstance(data, list):
+            return data
+        else:
+            return None
+    except Exception as e:
+        return None
 
-    # If whole-file parse didn't work, try JSONL (one object per line)
-    if not records:
-        with open(input_file, 'r', encoding='utf-8') as f:
-            for i, line in enumerate(f, 1):
-                l = line.strip()
-                if not l:
-                    continue
-                try:
-                    obj = json.loads(l)
-                    if isinstance(obj, str):
-                        # Stringified JSON (parquet-style column), double-parse
-                        obj = json.loads(obj)
-                    records.append(obj)
-                    if i % 1000 == 0:
-                        print(f"  Parsed {i} lines...")
-                except Exception as e:
-                    print(f"  Skipping bad line {i}: {l[:80]} Error: {e}")
+def load_jsonl_per_line(input_file):
+    records = []
+    with open(input_file, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f, 1):
+            l = line.strip()
+            if not l:
+                continue
+            try:
+                obj = json.loads(l)
+                if isinstance(obj, str):
+                    obj = json.loads(obj)
+                records.append(obj)
+                if i % 1000 == 0:
+                    print(f"  Parsed {i} lines...")
+            except Exception as e:
+                print(f"  Skipping bad line {i}: {l[:80]} Error: {e}")
+    return records
+
+summary = []
+for input_file in input_files:
+    table_name = build_table_name(input_file)
+    print(f"\nProcessing {input_file}")
+    records = load_json_whole_file(input_file)
+    if records is not None:
+        print("  Detected pretty-printed JSON (object or array).")
+    else:
+        print("  Falling back to JSONL (one object per line)...")
+        records = load_jsonl_per_line(input_file)
     if not records:
         print(f"  No valid records found in file: {input_file}")
-        return 0, 0, False
+        summary.append({
+            "file": input_file,
+            "table": table_name,
+            "parsed": 0,
+            "success": False
+        })
+        continue
 
     print(f"  Flattening {len(records)} records (level 1 only)...")
     try:
@@ -94,31 +96,27 @@ def process_json_file(input_file, table_name):
         print(f"  Saving to SAS table {saslib}.{table_name}")
         SAS.df2sd(df, f"{saslib}.{table_name}", replace=True)
         print(f"  SUCCESS: {saslib}.{table_name} created.")
-        return len(records), 0, True
+        summary.append({
+            "file": input_file,
+            "table": table_name,
+            "parsed": len(records),
+            "success": True
+        })
     except Exception as e:
         print(f"  ERROR flattening or saving {input_file}:")
         print(traceback.format_exc())
-        return len(records), 1, False
+        summary.append({
+            "file": input_file,
+            "table": table_name,
+            "parsed": len(records),
+            "success": False
+        })
 
-# --- Main loop ---
-summary = []
-for file in input_files:
-    table_name = build_table_name(file)
-    n_parsed, n_skipped, success = process_json_file(file, table_name)
-    summary.append({
-        "file": file,
-        "table": table_name,
-        "parsed": n_parsed,
-        "skipped": n_skipped,
-        "success": success
-    })
-
-# --- Summary report ---
 print("\n========== SUMMARY REPORT ==========")
 print(f"Files processed: {len(summary)}")
 for s in summary:
     status = "OK" if s['success'] else "ERROR"
-    print(f"  {status}: {s['file']} → {saslib}.{s['table']} | Parsed: {s['parsed']} | Skipped: {s['skipped']}")
+    print(f"  {status}: {s['file']} → {saslib}.{s['table']} | Parsed: {s['parsed']}")
 print("=====================================\n")
 
 endsubmit;
