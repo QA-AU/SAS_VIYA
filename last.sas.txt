@@ -1,0 +1,57 @@
+proc python;
+submit;
+import pandas as pd
+import json
+import re
+import traceback
+
+input_file = "/sasdata/cdof/pace/internal/QA/sample_historical_jsn"
+saslib = "mylib"
+out_table = "my_json_table"
+
+try:
+    print(f"Reading and cleaning file: {input_file}")
+    with open(input_file, 'r', encoding='utf-8') as f:
+        txt = f.read()
+    # Remove any trailing commas before closing } or ]
+    txt_clean = re.sub(r',(\s*[}\]])', r'\1', txt)
+
+    print("Sample of cleaned input (first 500 chars):")
+    print(txt_clean[:500])
+
+    try:
+        data = json.loads(txt_clean)
+        if isinstance(data, dict):
+            records = [data]
+        elif isinstance(data, list):
+            records = data
+        else:
+            raise Exception("JSON top-level is not an object or array")
+    except Exception as e:
+        print("ERROR: Could not parse JSON after cleaning. Please check your file format.")
+        print(traceback.format_exc())
+        records = []
+
+    if not records:
+        raise Exception("No valid JSON records found in file.")
+
+    print(f"Flattening {len(records)} record(s) to level 1 ...")
+    df = pd.json_normalize(records, max_level=1)
+
+    # Clean column names for SAS
+    def clean_sas_column(col):
+        return re.sub(r"[^A-Za-z0-9_]", "_", col)[:32]
+    df.columns = [clean_sas_column(col) for col in df.columns]
+
+    print("Sample DataFrame (first 5 columns):")
+    print(df.head())
+
+    print(f"Saving DataFrame to SAS table: {saslib}.{out_table} ...")
+    SAS.df2sd(df, f"{saslib}.{out_table}", replace=True)
+    print(f"SUCCESS: Data loaded to SAS table: {saslib}.{out_table}")
+
+except Exception as e:
+    print("ERROR processing JSON file:")
+    print(traceback.format_exc())
+endsubmit;
+run;
