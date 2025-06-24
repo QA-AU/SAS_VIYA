@@ -1,10 +1,10 @@
 /****************************************************************************************
-  Project    : Load JSON file (no extension) from SAS user folder to SAS table
-  Version    : 1.1 (Level-1 flatten)
+  Project    : Load JSONL (newline JSON) file (no extension) from SAS user folder to SAS table
+  Version    : 1.2 (Level-1 flatten, JSONL support)
   Date       : 2025-06-22
   Author     : Code Copilot (AI)
   Description: 
-    - Loads a JSON file (could be array or object) with NO file extension
+    - Loads a JSONL (newline-delimited JSON) file with NO file extension
     - Flattens only top-level nested JSON (level 1)
     - Writes to specified SAS library/table
 ****************************************************************************************/
@@ -24,18 +24,24 @@ out_table = "my_json_table"                       # Output SAS table name
 print(f"Reading file: {input_file}")
 
 try:
-    # Read the whole file
+    # --- Read JSONL file: each line is a JSON object ---
+    records = []
     with open(input_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)  # Handles object or array
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                records.append(obj)
+            except Exception as e:
+                print(f"Skipping bad line: {line}\n  Error: {e}")
 
-    # If top-level is a dict, wrap in list to flatten as table
-    if isinstance(data, dict):
-        data = [data]
-    elif not isinstance(data, list):
-        raise Exception("Top-level JSON is not a dict or list.")
+    if not records:
+        raise Exception("No valid JSON records found in file.")
 
     # Flatten only to level 1
-    df = pd.json_normalize(data, max_level=1)
+    df = pd.json_normalize(records, max_level=1)
 
     # Clean column names for SAS: max 32 chars, only alphanum and _
     def clean_sas_column(col):
