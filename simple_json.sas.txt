@@ -2,25 +2,33 @@ proc python;
 submit;
 import pandas as pd
 import json
-import re
 import traceback
 
-json_str = '''PUT_YOUR_JSON_HERE'''
+json_str = '''
+{
+    "id": 1,
+    "name": "Alice",
+    "address": {
+        "street": "123 Main St",
+        "city": "Melbourne",
+        "postcode": "3000"
+    },
+    "contact": {
+        "email": "alice@example.com",
+        "phone": "123456789"
+    }
+}
+'''
 
 try:
     data = json.loads(json_str)
     records = [data] if isinstance(data, dict) else data
-
     df = pd.json_normalize(records, max_level=1)
-
-    def clean_sas_column(col):
-        return re.sub(r"[^A-Za-z0-9_]", "_", col)[:32]
-    df.columns = [clean_sas_column(col) for col in df.columns]
-
     print(df.head())
     SAS.df2sd(df, 'work.json_temp', replace=True)
     print("SUCCESS: Loaded to work.json_temp")
 except Exception as e:
+    import traceback
     print(traceback.format_exc())
 endsubmit;
 run;
